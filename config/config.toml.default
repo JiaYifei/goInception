@@ -74,6 +74,11 @@ explain_rule = "first"
 # 1  表示开启安全更新
 sql_safe_updates = -1
 
+# 设置执行SQL时，会话变量
+# -1 表示不做操作，基于远端数据库【默认值】
+# > 0 值表示，会话在执行SQL 时获取锁超时的时间
+lock_wait_timeout = -1
+
 support_charset = "utf8,utf8mb4"
 support_engine = "innodb"
 
@@ -115,6 +120,9 @@ osc_max_lag = 3
 
 # 类似--max-lag，检查集群暂停流量控制所花费的平均时间（仅适用于PXC 5.6及以上版本,会自动检测)
 osc_max_flow_ctl = -1
+
+# 对应参数pt-online-schema-change中的参数 --set-vars lock_wait_timeout=?
+osc_lock_wait_timeout = 60
 
 # 对应参数pt-online-schema-change中的参数--[no]check-alter。默认值：ON
 osc_check_alter = true

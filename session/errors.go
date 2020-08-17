@@ -207,6 +207,7 @@ const (
 	ErrJoinNoOnCondition
 	ErrImplicitTypeConversion
 	ErrUseValueExpr
+	ErrUseIndexVisibility
 	ER_ERROR_LAST
 )
 
@@ -226,7 +227,7 @@ var ErrorsDefault = map[ErrorCode]string{
 	ER_BAD_FIELD_ERROR:                     "Unknown column '%s' in '%s'.",
 	ER_FIELD_SPECIFIED_TWICE:               "Column '%s' specified twice in table '%s'.",
 	ER_BAD_NULL_ERROR:                      "Column '%s' cannot be null in %d row.",
-	ER_NO_WHERE_CONDITION:                  "set the where condition for select statement.",
+	ER_NO_WHERE_CONDITION:                  "Please set the where condition.",
 	ER_NORMAL_SHUTDOWN:                     "%s: Normal shutdown\n",
 	ER_FORCING_CLOSE:                       "%s: Forcing close of thread %ld  user: '%s'\n",
 	ER_CON_COUNT_ERROR:                     "Too many connections",
@@ -300,7 +301,7 @@ var ErrorsDefault = map[ErrorCode]string{
 	ER_END_WITH_COMMIT:                     "Must end with commit.",
 	ER_DB_NOT_EXISTED_ERROR:                "Selected Database '%s' not existed.",
 	ER_TABLE_EXISTS_ERROR:                  "Table '%s' already exists.",
-	ER_INDEX_NAME_IDX_PREFIX:               "Index '%s' in table '%s' need 'idx_' prefix.",
+	ER_INDEX_NAME_IDX_PREFIX:               "Index '%s' in table '%s' need '%s' prefix.",
 	ER_INDEX_NAME_UNIQ_PREFIX:              "Index '%s' in table '%s' need 'uniq_' prefix.",
 	ER_AUTOINC_UNSIGNED:                    "Set unsigned attribute on auto increment column in table '%s'.",
 	ER_VARCHAR_TO_TEXT_LEN:                 "Set column '%s' to TEXT type.",
@@ -381,6 +382,7 @@ var ErrorsDefault = map[ErrorCode]string{
 	ErrJoinNoOnCondition:           "set the on clause for join statement.",
 	ErrImplicitTypeConversion:      "Implicit type conversion is not allowed(column '%s.%s',type '%s').",
 	ErrUseValueExpr:                "Please confirm if you want to use value expression in where condition.",
+	ErrUseIndexVisibility:          "The back-end database does not support the index to specify the visible option.",
 	ER_ERROR_LAST:                  "TheLastError,ByeBye",
 }
 
@@ -399,7 +401,7 @@ var ErrorsChinese = map[ErrorCode]string{
 	ER_BAD_FIELD_ERROR:                  "Unknown column '%s' in '%s'.",
 	ER_FIELD_SPECIFIED_TWICE:            "列 '%s' 指定重复(表 '%s').",
 	ER_BAD_NULL_ERROR:                   "列 '%s' 不能为null(第 %d 行).",
-	ER_NO_WHERE_CONDITION:               "selete语句请指定where条件.",
+	ER_NO_WHERE_CONDITION:               "请指定where条件.",
 	ER_NORMAL_SHUTDOWN:                  "%s: Normal shutdown\n",
 	ER_FORCING_CLOSE:                    "%s: Forcing close of thread %ld  user: '%s'\n",
 	ER_CON_COUNT_ERROR:                  "Too many connections",
@@ -547,6 +549,7 @@ var ErrorsChinese = map[ErrorCode]string{
 	ErrJoinNoOnCondition:                   "join语句请指定on子句.",
 	ErrImplicitTypeConversion:              "不允许隐式类型转换(列'%s.%s',类型'%s').",
 	ErrUseValueExpr:                        "请确认是否要在where条件中使用值表达式.",
+	ErrUseIndexVisibility:                  "后端数据库暂不支持索引指定visible选项",
 }
 
 func GetErrorLevel(code ErrorCode) uint8 {
@@ -1041,15 +1044,16 @@ func (e ErrorCode) String() string {
 		return "er_implicit_type_conversion"
 	case ErrUseValueExpr:
 		return "er_use_value_expr"
+	case ErrUseIndexVisibility:
+		return "er_use_index_visibility"
 	case ER_ERROR_LAST:
 		return "er_error_last"
 	}
 	return ""
 }
 
-// CheckAuditSetting 自动校准旧的审核规则和自定义规则
-func CheckAuditSetting(cnf *config.Config) {
-	return
+// TestCheckAuditSetting 自动校准旧的审核规则和自定义规则
+func TestCheckAuditSetting(cnf *config.Config) {
 
 	if cnf.Inc.CheckInsertField {
 		cnf.IncLevel.ER_WITH_INSERT_FIELD = int8(GetErrorLevel(ER_WITH_INSERT_FIELD))
@@ -1238,9 +1242,9 @@ func CheckAuditSetting(cnf *config.Config) {
 	}
 
 	if cnf.Inc.EnableChangeColumn {
-		cnf.IncLevel.ErCantChangeColumn = int8(GetErrorLevel(ErCantChangeColumn))
-	} else {
 		cnf.IncLevel.ErCantChangeColumn = 0
+	} else {
+		cnf.IncLevel.ErCantChangeColumn = int8(GetErrorLevel(ErCantChangeColumn))
 	}
 
 	if !cnf.Inc.EnableBlobNotNull {

@@ -34,8 +34,10 @@ import (
 	"github.com/hanchuanchuan/goInception/session"
 	"github.com/hanchuanchuan/goInception/store/mockstore"
 	"github.com/hanchuanchuan/goInception/store/mockstore/mocktikv"
+	"github.com/hanchuanchuan/goInception/util/logutil"
 	"github.com/hanchuanchuan/goInception/util/testkit"
 	"github.com/hanchuanchuan/goInception/util/testleak"
+
 	"github.com/jinzhu/gorm"
 	. "github.com/pingcap/check"
 	repllog "github.com/siddontang/go-log/log"
@@ -44,6 +46,13 @@ import (
 )
 
 var _ = Suite(&testCommon{})
+
+// 数据库类型
+const (
+	DBTypeMysql = iota
+	DBTypeMariaDB
+	DBTypeTiDB
+)
 
 var sql string
 
@@ -72,6 +81,7 @@ type testCommon struct {
 	rows [][]interface{}
 
 	DBVersion         int
+	DBType            int
 	sqlMode           string
 	innodbLargePrefix bool
 	// 时间戳类型是否需要明确指定默认值
@@ -168,12 +178,12 @@ func (s *testCommon) initSetUp(c *C) {
 
 	c.Assert(s.mysqlServerVersion(), IsNil)
 	c.Assert(s.sqlMode, Not(Equals), "")
-	// log.Infof("%#v", s)
-	log.Error("数据库版本: ", s.DBVersion)
+
+	// log.Error("数据库版本: ", s.DBVersion, " type: ", s.DBType)
 
 	// 测试API接口时自动忽略之前的测试方法
 
-	log.Errorf("is api: %v", isAPI)
+	// log.Errorf("is api: %v", isAPI)
 	s.isAPI = isAPI
 	if isAPI {
 		s.sessionService = session.NewInception()
@@ -217,7 +227,7 @@ func (s *testCommon) tearDownTest(c *C) {
 	}()
 
 	config.GetGlobalConfig().Inc.EnableDropTable = true
-	session.CheckAuditSetting(config.GetGlobalConfig())
+	session.TestCheckAuditSetting(config.GetGlobalConfig())
 
 	s.runCheck("show tables")
 	c.Assert(int(s.getAffectedRows()), Equals, 2)
@@ -249,7 +259,7 @@ inception_magic_commit;`
 }
 
 func (s *testCommon) runCheck(sql string) {
-	session.CheckAuditSetting(config.GetGlobalConfig())
+	session.TestCheckAuditSetting(config.GetGlobalConfig())
 
 	if s.isAPI {
 		s.sessionService.LoadOptions(session.SourceOptions{
@@ -346,7 +356,7 @@ inception_magic_commit;`
 
 func (s *testCommon) mustRunExec(c *C, sql string) *testkit.Result {
 	config.GetGlobalConfig().Inc.EnableDropTable = true
-	session.CheckAuditSetting(config.GetGlobalConfig())
+	session.TestCheckAuditSetting(config.GetGlobalConfig())
 
 	if s.isAPI {
 		s.sessionService.LoadOptions(session.SourceOptions{
@@ -516,7 +526,7 @@ func (s *testCommon) getAddr() string {
 func (s *testCommon) mysqlServerVersion() error {
 	inc := config.GetGlobalConfig().Inc
 	if s.db == nil || s.db.DB().Ping() != nil {
-		addr := fmt.Sprintf("%s:%s@tcp(%s:%d)/mysql?charset=utf8mb4&parseTime=True&loc=Local&maxAllowedPacket=4194304",
+		addr := fmt.Sprintf("%s:%s@tcp(%s:%d)/mysql?charset=utf8mb4&parseTime=True&loc=Local&maxAllowedPacket=4194304&autocommit=1",
 			inc.BackupUser, inc.BackupPassword, inc.BackupHost, inc.BackupPort)
 
 		db, err := gorm.Open("mysql", addr)
@@ -541,6 +551,15 @@ func (s *testCommon) mysqlServerVersion() error {
 
 		switch name {
 		case "version":
+
+			if strings.Contains(strings.ToLower(value), "mariadb") {
+				s.DBType = DBTypeMariaDB
+			} else if strings.Contains(strings.ToLower(value), "tidb") {
+				s.DBType = DBTypeTiDB
+			} else {
+				s.DBType = DBTypeMysql
+			}
+
 			versionStr := strings.Split(value, "-")[0]
 			versionSeg := strings.Split(versionStr, ".")
 			if len(versionSeg) == 3 {
@@ -587,7 +606,7 @@ func (s *testCommon) assertRows(c *C, rows [][]interface{}, rollbackSqls ...stri
 	c.Assert(len(rows), Not(Equals), 0)
 	inc := config.GetGlobalConfig().Inc
 	if s.db == nil || s.db.DB().Ping() != nil {
-		addr := fmt.Sprintf("%s:%s@tcp(%s:%d)/mysql?charset=utf8mb4&parseTime=True&loc=Local&maxAllowedPacket=4194304",
+		addr := fmt.Sprintf("%s:%s@tcp(%s:%d)/mysql?charset=utf8mb4&parseTime=True&loc=Local&maxAllowedPacket=4194304&autocommit=1",
 			inc.BackupUser, inc.BackupPassword, inc.BackupHost, inc.BackupPort)
 
 		db, err := gorm.Open("mysql", addr)
@@ -789,24 +808,18 @@ func (s *testCommon) getObjectName(sql string) (name string) {
 		case *ast.UpdateStmt:
 			return ""
 
-			tblSrc := getLeftTable(node.TableRefs.TableRefs)
-			if tblSrc == nil {
-				log.Errorf("未找到表名！！！ sql: %s", sql)
-				return ""
-			}
-			tblName, ok := tblSrc.Source.(*ast.TableName)
-			if !ok {
-				log.Infof("%#v", tblSrc.Source)
-				return ""
-			}
-
-			// for _, l := range node.List {
-			// 	originTable := l.Column.Table.L
-			// 	firstColumnName := l.Column.Name.O
-
+			// tblSrc := getLeftTable(node.TableRefs.TableRefs)
+			// if tblSrc == nil {
+			// 	log.Errorf("未找到表名！！！ sql: %s", sql)
+			// 	return ""
+			// }
+			// tblName, ok := tblSrc.Source.(*ast.TableName)
+			// if !ok {
+			// 	log.Infof("%#v", tblSrc.Source)
+			// 	return ""
 			// }
 
-			name = tblName.Name.String()
+			// name = tblName.Name.String()
 		case *ast.DeleteStmt:
 			tableRefs := node.TableRefs
 			if tableRefs == nil || tableRefs.TableRefs == nil || tableRefs.TableRefs.Right != nil {
@@ -863,7 +876,7 @@ func (s *testCommon) queryStatistics() []int {
 	inc := config.GetGlobalConfig().Inc
 	if s.db == nil || s.db.DB().Ping() != nil {
 
-		addr := fmt.Sprintf("%s:%s@tcp(%s:%d)/mysql?charset=utf8mb4&parseTime=True&loc=Local&maxAllowedPacket=4194304",
+		addr := fmt.Sprintf("%s:%s@tcp(%s:%d)/mysql?charset=utf8mb4&parseTime=True&loc=Local&maxAllowedPacket=4194304&autocommit=1",
 			inc.BackupUser, inc.BackupPassword, inc.BackupHost, inc.BackupPort)
 		db, err := gorm.Open("mysql", addr)
 		if err != nil {
@@ -920,7 +933,7 @@ func trim(s string) string {
 func (s *testCommon) query(table, opid string) string {
 	inc := config.GetGlobalConfig().Inc
 	if s.db == nil || s.db.DB().Ping() != nil {
-		addr := fmt.Sprintf("%s:%s@tcp(%s:%d)/mysql?charset=utf8mb4&parseTime=True&loc=Local&maxAllowedPacket=4194304",
+		addr := fmt.Sprintf("%s:%s@tcp(%s:%d)/mysql?charset=utf8mb4&parseTime=True&loc=Local&maxAllowedPacket=4194304&autocommit=1",
 			inc.BackupUser, inc.BackupPassword, inc.BackupHost, inc.BackupPort)
 
 		db, err := gorm.Open("mysql", addr)
@@ -964,7 +977,13 @@ func (s *testCommon) parserStmt(sql string) ast.StmtNode {
 func (s *testCommon) reset() {
 	config.GetGlobalConfig().Inc = s.defaultInc
 	log.SetLevel(log.ErrorLevel)
-	log.SetReportCaller(true)
+	// log.SetReportCaller(true)
+
+	_ = logutil.InitLogger(&logutil.LogConfig{
+		Level:            "error",
+		Format:           "text",
+		DisableTimestamp: false,
+	})
 }
 
 // getAffectedRows 获取受影响行数, 区分api返回和mysql会话返回

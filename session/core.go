@@ -109,6 +109,9 @@ func (s *session) init() {
 
 	s.sqlFingerprint = nil
 
+	s.dbType = DBTypeMysql
+	s.dbVersion = 0
+
 	// 自定义审核级别,通过解析config.GetGlobalConfig().IncLevel生成
 	s.parseIncLevel()
 }
@@ -117,6 +120,9 @@ func (s *session) init() {
 func (s *session) clear() {
 	if s.db != nil {
 		defer s.db.Close()
+	}
+	if s.ddlDB != nil {
+		defer s.ddlDB.Close()
 	}
 	if s.backupdb != nil {
 		defer s.backupdb.Close()
@@ -493,6 +499,7 @@ func (s *session) checkOptions() error {
 
 	s.mysqlServerVersion()
 	s.setSqlSafeUpdates()
+	s.setLockWaitTimeout()
 
 	if s.opt.Backup && s.dbType == DBTypeTiDB {
 		s.appendErrorMessage("TiDB暂不支持备份功能.")

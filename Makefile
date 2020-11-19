@@ -69,12 +69,12 @@ build:
 	$(GOBUILD)
 
 goyacc:
-	$(GOBUILD) -o bin/goyacc parser/goyacc/main.go
+	@$(GOBUILD) -o bin/goyacc parser/goyacc/main.go
 
 parser: goyacc
 	bin/goyacc -o /dev/null parser/parser.y
-	bin/goyacc -o parser/parser.go parser/parser.y 2>&1 | egrep "(shift|reduce)/reduce" | awk '{print} END {if (NR > 0) {print "Find conflict in parser.y. Please check y.output for more information."; exit 1;}}'
-	rm -f y.output
+	@bin/goyacc -o parser/parser.go parser/parser.y 2>&1 | egrep "(shift|reduce)/reduce" | awk '{print} END {if (NR > 0) {print "Find conflict in parser.y. Please check y.output for more information."; exit 1;} else {print "SUCCESS!"}}'
+	@rm -f y.output
 
 	@if [ $(ARCH) = $(LINUX) ]; \
 	then \
@@ -287,27 +287,27 @@ tools/bin/gosec: tools/check/go.mod
 release:
 	@echo "$(CGREEN)Cross platform building for release ...$(CEND)"
 	@mkdir -p release
-	@for GOOS in darwin linux; do \
-		for GOARCH in amd64; do \
-			echo "Building $${GOOS}-$${GOARCH} ..."; \
-			GOOS=$${GOOS} GOARCH=amd64 $(GOBUILD) -ldflags '-s -w $(LDFLAGS)'  -o goInception tidb-server/main.go; \
-			tar -czf release/goInception-$${GOOS}-amd64-${VERSION}.tar.gz goInception config/config.toml.default; \
-			rm -f goInception; \
-		done ;\
-	done
+	@GOOS=darwin GOARCH=amd64 $(GOBUILD) -ldflags '-s -w $(LDFLAGS)'  -o goInception tidb-server/main.go
+	@tar -czf release/goInception-macOS-${VERSION}.tar.gz goInception config/config.toml.default
+	@rm -f goInception
+
+	@GOOS=linux GOARCH=amd64 $(GOBUILD) -ldflags '-s -w $(LDFLAGS)'  -o goInception tidb-server/main.go
+	@tar -czf release/goInception-linux-${VERSION}.tar.gz goInception config/config.toml.default
+	@rm -f goInception
 
 .PHONY: release
 release2:
 	@echo "$(CGREEN)Cross platform building for release ...$(CEND)"
 	@mkdir -p release
-	@for GOOS in darwin linux; do \
-		for GOARCH in amd64; do \
-			echo "Building $${GOOS}-$${GOARCH} ..."; \
-			GOOS=$${GOOS} GOARCH=amd64 $(GOBUILD) -ldflags '-s -w $(LDFLAGS)'  -o goInception tidb-server/main.go; \
-			tar -czf release/goInception-$${GOOS}-amd64-${VERSION_EASY}.tar.gz goInception config/config.toml.default; \
-			rm -f goInception; \
-		done ;\
-	done
+
+	@GOOS=darwin GOARCH=amd64 $(GOBUILD) -ldflags '-s -w $(LDFLAGS)'  -o goInception tidb-server/main.go
+	@tar -czf release/goInception-macOS-${VERSION_EASY}.tar.gz goInception config/config.toml.default
+	@rm -f goInception
+
+	@GOOS=linux GOARCH=amd64 $(GOBUILD) -ldflags '-s -w $(LDFLAGS)'  -o goInception tidb-server/main.go
+	@tar -czf release/goInception-linux-${VERSION_EASY}.tar.gz goInception config/config.toml.default
+	@rm -f goInception
+
 
 docker:
 	@if [ ! -f bin/percona-toolkit.tar.gz ];then \

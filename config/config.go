@@ -274,6 +274,7 @@ type Inc struct {
 	EnableForeignKey       bool `toml:"enable_foreign_key" json:"enable_foreign_key"`
 	EnableIdentiferKeyword bool `toml:"enable_identifer_keyword" json:"enable_identifer_keyword"`
 	EnableJsonType         bool `toml:"enable_json_type" json:"enable_json_type"`
+	EnableUseView          bool `toml:"enable_use_view" json:"enable_use_view"`
 	// 是否启用自定义审核级别设置
 	// EnableLevel bool `toml:"enable_level" json:"enable_level"`
 	// 是否启用最小化回滚SQL设置,当开启时,update语句中未变更的值不再记录到回滚语句中
@@ -298,6 +299,14 @@ type Inc struct {
 	// 		"first": 	使用第一行的explain结果作为受影响行数
 	// 		"max": 		使用explain结果中的最大值作为受影响行数
 	ExplainRule string `toml:"explain_rule" json:"explain_rule"`
+
+	// sql_mode, 默认值""
+	// 可选值: "", "STRICT_TRANS_TABLES", "STRICT_ALL_TABLES", "TRADITIONAL"
+	//      "":                         默认使用目标 MySQL 实例 sql_mode
+	//      "STRICT_TRANS_TABLES":      为事务性存储引擎以及可能的情况下为非事务性存储引擎启用严格的SQL模式
+	//      "STRICT_ALL_TABLES":        为所有存储引擎启用严格的SQL模式
+	//      "TRADITIONAL":              严格的SQL组合模式, 相当于STRICT_TRANS_TABLES， STRICT_ALL_TABLES， NO_ZERO_IN_DATE， NO_ZERO_DATE， ERROR_FOR_DIVISION_BY_ZERO， NO_AUTO_CREATE_USER，和 NO_ENGINE_SUBSTITUTION
+	SqlMode string `toml:"sql_mode" json:"sql_mode"`
 
 	// 全量日志
 	GeneralLog bool `toml:"general_log" json:"general_log"`
@@ -337,6 +346,10 @@ type Inc struct {
 	SkipGrantTable bool `toml:"skip_grant_table" json:"skip_grant_table"`
 	// 要跳过的sql语句, 多个时以分号分隔
 	SkipSqls string `toml:"skip_sqls" json:"skip_sqls"`
+
+	// alter table子句忽略OSC工具.
+	// 格式为drop index,add column等,配置要跳过的子句格式,多个时以逗号分隔
+	IgnoreOscAlterStmt string `toml:"ignore_osc_alter_stmt" json:"ignore_osc_alter_stmt"`
 
 	// 安全更新是否开启.
 	// -1 表示不做操作,基于远端数据库 [默认值]
@@ -402,6 +415,9 @@ type Osc struct {
 
 	// 对应参数pt-online-schema-change中的参数--[no]check-alter。默认值：ON
 	OscCheckAlter bool `toml:"osc_check_alter" json:"osc_check_alter"`
+
+	// 对应参数pt-online-schema-change中的参数 --sleep 默认值：0.0
+	OscSleep float32 `toml:"osc_sleep" json:"osc_sleep"`
 
 	// 对应参数pt-online-schema-change中的参数 --set-vars lock_wait_timeout=60s
 	OscLockWaitTimeout int `toml:"osc_lock_wait_timeout" json:"osc_lock_wait_timeout"`
@@ -637,6 +653,8 @@ type IncLevel struct {
 	ErrJoinNoOnCondition            int8 `toml:"er_join_no_on_condition"`
 	ErrUseValueExpr                 int8 `toml:"er_use_value_expr"`
 	ErrWrongAndExpr                 int8 `toml:"er_wrong_and_expr"`
+	ErrViewSupport                  int8 `toml:"er_view_support"`
+	ErrIncorrectDateTimeValue       int8 `toml:"er_incorrect_datetime_value"`
 }
 
 var defaultConf = Config{
@@ -734,6 +752,7 @@ var defaultConf = Config{
 		DefaultCharset:   "utf8mb4",
 		MaxAllowedPacket: 4194304,
 		ExplainRule:      "first",
+		SqlMode:          "",
 
 		// 为配置方便,在config节点也添加相同参数
 		SkipGrantTable: true,
@@ -754,6 +773,7 @@ var defaultConf = Config{
 		OscRecursionMethod:         "processlist",
 		OscMaxLag:                  3,
 		OscMaxFlowCtl:              -1,
+		OscSleep:                   0.0,
 		OscLockWaitTimeout:         60,
 		OscCheckAlter:              true,
 		OscCheckReplicationFilters: true,
@@ -845,6 +865,8 @@ var defaultConf = Config{
 		ErrJoinNoOnCondition:            1,
 		ErrUseValueExpr:                 1,
 		ErrWrongAndExpr:                 1,
+		ErrViewSupport:                  2,
+		ErrIncorrectDateTimeValue:       2,
 	},
 }
 

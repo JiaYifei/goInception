@@ -7,7 +7,6 @@ import (
 	"encoding/hex"
 	"fmt"
 	"math"
-	"reflect"
 	"strconv"
 	"strings"
 	"sync"
@@ -255,7 +254,7 @@ func (s *session) parserBinlog(ctx context.Context) {
 	logSync, err := b.StartSync(startPosition)
 	if err != nil {
 		log.Infof("Start sync error: %v\n", errors.ErrorStack(err))
-		s.appendErrorMessage(err.Error())
+		s.appendErrorMsg(err.Error())
 		return
 	}
 
@@ -279,7 +278,7 @@ func (s *session) parserBinlog(ctx context.Context) {
 			}
 			log.Errorf("current pos: %s", currentPosition.String())
 			log.Errorf("%#v", err)
-			s.appendErrorMessage(fmt.Sprintf("%#v", err))
+			s.appendErrorMsg(fmt.Sprintf("%#v", err))
 		}
 	}()
 
@@ -287,7 +286,7 @@ func (s *session) parserBinlog(ctx context.Context) {
 		e, err := logSync.GetEvent(context.Background())
 		if err != nil {
 			log.Infof("Get event error: %v\n", errors.ErrorStack(err))
-			s.appendErrorMessage(err.Error())
+			s.appendErrorMsg(err.Error())
 			break
 		}
 
@@ -330,10 +329,10 @@ func (s *session) parserBinlog(ctx context.Context) {
 
 			if s.dbType == DBTypeMariaDB && s.dbVersion >= 100000 {
 				goto ENDCHECK
-			} else {
-				if event, ok := e.Event.(*replication.QueryEvent); ok {
-					currentThreadID = event.SlaveProxyID
-				}
+			}
+
+			if event, ok := e.Event.(*replication.QueryEvent); ok {
+				currentThreadID = event.SlaveProxyID
 			}
 
 		case replication.WRITE_ROWS_EVENTv1, replication.WRITE_ROWS_EVENTv2:
@@ -389,7 +388,7 @@ func (s *session) parserBinlog(ctx context.Context) {
 			// if (record.StageStatus == StatusExecFail && record.AffectedRows > 0) ||
 			// 	record.StageStatus == StatusExecOK || record.StageStatus == StatusBackupFail {
 			if record.AffectedRows > 0 {
-				if changeRows >= record.AffectedRows {
+				if int64(changeRows) >= record.AffectedRows {
 					record.StageStatus = StatusBackupOK
 				}
 			}
@@ -411,7 +410,7 @@ func (s *session) parserBinlog(ctx context.Context) {
 				break
 			}
 		} else if s.opt.tranBatch > 1 {
-			if changeRows >= record.AffectedRows &&
+			if int64(changeRows) >= record.AffectedRows &&
 				(s.dbType != DBTypeMariaDB || s.dbVersion < 100000) {
 				if record.AffectedRows > 0 {
 					record.StageStatus = StatusBackupOK
@@ -440,7 +439,7 @@ func (s *session) parserBinlog(ctx context.Context) {
 			// 进程Killed
 			if err := checkClose(ctx); err != nil {
 				log.Warn("Killed: ", err)
-				s.appendErrorMessage("Operation has been killed!")
+				s.appendErrorMsg("Operation has been killed!")
 				break
 			}
 		}
@@ -552,7 +551,7 @@ func (s *session) flush(table string, record *Record) {
 			if myErr, ok := err.(*mysqlDriver.MySQLError); ok {
 				record.appendErrorMessage(myErr.Message)
 			} else {
-				s.appendErrorMessage(err.Error())
+				s.appendErrorMsg(err.Error())
 			}
 			log.Errorf("con:%d %v sql:%s params:%v",
 				s.sessionVars.ConnectionID, err, sql, s.insertBuffer)
@@ -793,6 +792,7 @@ func (s *session) generateUpdateSql(t *TableInfo, e *replication.RowsEvent,
 		newValues []driver.Value
 		newSql    string
 	)
+
 	// update时, Rows为2的倍数, 双数index为旧值,单数index为新值
 	for i, rows := range e.Rows {
 		if i%2 == 0 {
@@ -803,21 +803,8 @@ func (s *session) generateUpdateSql(t *TableInfo, e *replication.RowsEvent,
 				// 	continue
 				// }
 				if minimalMode {
-					equal := false
-					switch v := d.(type) {
-					case []byte:
-						equal = reflect.DeepEqual(d, e.Rows[i+1][j])
-					case decimal.Decimal:
-						if newDec, ok := e.Rows[i+1][j].(decimal.Decimal); ok {
-							equal = v.Equal(newDec)
-						} else {
-							equal = false
-						}
-					default:
-						equal = d == e.Rows[i+1][j]
-					}
 					// 最小化模式下,列如果相等则省略
-					if !equal {
+					if !compareValue(d, e.Rows[i+1][j]) {
 						if t.Fields[j].IsGenerated() {
 							continue
 						}
@@ -1121,4 +1108,45 @@ func escapeBytesBackslash(buf, v []byte) []byte {
 	}
 
 	return buf[:pos]
+}
+
+// compareValue 比较两值是否相等
+func compareValue(v1 interface{}, v2 interface{}) bool {
+	equal := false
+
+	// 处理特殊情况
+	if v1 == nil && v2 == nil {
+		return true
+	}
+	if v1 == nil || v2 == nil {
+		return false
+	}
+
+	switch v := v1.(type) {
+	case []byte:
+		equal = byteEquals(v, v2.([]byte))
+	case decimal.Decimal:
+		if newDec, ok := v2.(decimal.Decimal); ok {
+			equal = v.Equal(newDec)
+		} else {
+			equal = false
+		}
+	default:
+		equal = v1 == v2
+	}
+
+	return equal
+}
+
+// byteEquals 判断字节切片是否相等
+func byteEquals(v1, v2 []byte) bool {
+	if len(v1) != len(v2) {
+		return false
+	}
+	for i, v := range v1 {
+		if v != v2[i] {
+			return false
+		}
+	}
+	return true
 }

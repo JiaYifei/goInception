@@ -15,6 +15,7 @@ package session_test
 
 import (
 	"fmt"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -205,7 +206,6 @@ func (s *testSessionIncSuite) runAudit(c *C) {
 		sqls = append(sqls, a.sql)
 	}
 
-	session.TestCheckAuditSetting(config.GetGlobalConfig())
 	a := `/*%s;--check=1;--backup=0;--enable-ignore-warnings;real_row_count=%v;*/
 inception_magic_start;
 %s
@@ -381,20 +381,20 @@ func (s *testSessionIncSuite) TestCreateTable(c *C) {
 	// 数据类型 警告
 	sql = "create table t1(id int,c1 bit);"
 	s.testErrorCode(c, sql,
-		session.NewErr(session.ER_INVALID_DATA_TYPE, "c1"))
+		session.NewErr(session.ER_INVALID_DATA_TYPE, "c1", "bit"))
 
 	sql = "create table t1(id int,c1 enum('red', 'blue', 'black'));"
 	s.testErrorCode(c, sql,
-		session.NewErr(session.ER_INVALID_DATA_TYPE, "c1"))
+		session.NewErr(session.ER_INVALID_DATA_TYPE, "c1", "enum"))
 
 	sql = "create table t1(id int,c1 set('red', 'blue', 'black'));"
 	s.testErrorCode(c, sql,
-		session.NewErr(session.ER_INVALID_DATA_TYPE, "c1"))
+		session.NewErr(session.ER_INVALID_DATA_TYPE, "c1", "set"))
 
 	config.GetGlobalConfig().Inc.EnableTimeStampType = false
 	sql = "create table t1(id int,c1 timestamp);"
 	s.testErrorCode(c, sql,
-		session.NewErr(session.ER_INVALID_DATA_TYPE, "c1"))
+		session.NewErr(session.ER_INVALID_DATA_TYPE, "c1", "timestamp"))
 
 	config.GetGlobalConfig().Inc.EnableTimeStampType = true
 	sql = "create table t1(id int,c1 timestamp);"
@@ -460,17 +460,37 @@ func (s *testSessionIncSuite) TestCreateTable(c *C) {
 
 	// blob/text字段
 	config.GetGlobalConfig().Inc.EnableBlobType = false
-	sql = ("create table t1(id int,c1 blob, c2 text);")
+	sql = "create table t111(id int,c1 blob, c2 text);"
 	s.testErrorCode(c, sql,
-		session.NewErr(session.ER_USE_TEXT_OR_BLOB, "c1"),
-		session.NewErr(session.ER_USE_TEXT_OR_BLOB, "c2"),
+		session.NewErr(session.ER_INVALID_DATA_TYPE, "c1", "blob"),
+		session.NewErr(session.ER_INVALID_DATA_TYPE, "c2", "text"),
 	)
+
+	config.GetGlobalConfig().Inc.DisableTypes = "blob,text"
+	sql = "create table t111(id int,c1 blob, c2 text);"
+	s.testErrorCode(c, sql,
+		session.NewErr(session.ER_INVALID_DATA_TYPE, "c1", "blob"),
+		session.NewErr(session.ER_INVALID_DATA_TYPE, "c2", "text"),
+	)
+	config.GetGlobalConfig().Inc.DisableTypes = ""
 
 	config.GetGlobalConfig().Inc.EnableBlobType = true
 	sql = ("create table t1(id int,c1 blob not null);")
 	s.testErrorCode(c, sql,
 		session.NewErr(session.ER_TEXT_NOT_NULLABLE_ERROR, "c1", "t1"),
 	)
+
+	// 指定类型禁用
+	config.GetGlobalConfig().Inc.DisableTypes = "bit"
+	sql = "create table t1(id int,c1 bit default b'0');"
+	s.testErrorCode(c, sql,
+		session.NewErr(session.ER_INVALID_DATA_TYPE, "c1", "bit"))
+	config.GetGlobalConfig().Inc.DisableTypes = ""
+
+	config.GetGlobalConfig().Inc.EnableEnumSetBit = false
+	sql = "create table t1(id int,c1 bit default b'0');"
+	s.testErrorCode(c, sql,
+		session.NewErr(session.ER_INVALID_DATA_TYPE, "c1", "bit"))
 
 	// 检查默认值
 	config.GetGlobalConfig().Inc.CheckColumnDefaultValue = true
@@ -615,7 +635,9 @@ func (s *testSessionIncSuite) TestCreateTable(c *C) {
 	sql = "create table t1(a int) character set latin123;"
 	s.testErrorCode(c, sql,
 		session.NewErr(session.ErrCharsetNotSupport, "utf8,utf8mb4"),
-		session.NewErr(session.ErrUnknownCharset, "latin123"))
+		session.NewErr(session.ErrUnknownCharset, "latin123"),
+		session.NewErrf("COLLATION '' is not valid for CHARACTER SET 'latin123'!"),
+	)
 
 	sql = "create table t1(a int) character set gbk;"
 	s.testErrorCode(c, sql,
@@ -669,7 +691,7 @@ func (s *testSessionIncSuite) TestCreateTable(c *C) {
 	config.GetGlobalConfig().Inc.EnableNullIndexName = false
 
 	indexMaxLength := 767
-	if s.innodbLargePrefix {
+	if s.innodbLargePrefix || s.DBVersion > 80000 {
 		indexMaxLength = 3072
 	}
 
@@ -677,7 +699,7 @@ func (s *testSessionIncSuite) TestCreateTable(c *C) {
 	config.GetGlobalConfig().Inc.CheckIndexPrefix = false
 	sql = "create table test_error_code_3(pt text ,primary key (pt));"
 	s.testErrorCode(c, sql,
-		session.NewErr(session.ER_USE_TEXT_OR_BLOB, "pt"),
+		session.NewErr(session.ER_INVALID_DATA_TYPE, "pt", "text"),
 		session.NewErr(session.ER_TOO_LONG_KEY, "PRIMARY", indexMaxLength))
 
 	config.GetGlobalConfig().Inc.EnableBlobType = true
@@ -693,7 +715,7 @@ func (s *testSessionIncSuite) TestCreateTable(c *C) {
 		session.NewErr(session.ER_TOO_LONG_KEY, "uq_1", indexMaxLength))
 
 	// ----------------- 索引长度审核 varchar ----------------------
-	if s.innodbLargePrefix {
+	if s.innodbLargePrefix || s.DBVersion > 80000 {
 		sql = "create table test_error_code_3(c1 int primary key,c2 varchar(1024),c3 int, key uq_1(c2,c3)) default charset utf8;"
 		s.testErrorCode(c, sql,
 			session.NewErr(session.ER_TOO_LONG_KEY, "uq_1", indexMaxLength))
@@ -890,7 +912,7 @@ primary key(id)) comment 'test';`
 	config.GetGlobalConfig().Inc.ColumnsMustHaveIndex = ""
 
 	config.GetGlobalConfig().Inc.CheckInsertField = false
-	config.GetGlobalConfig().IncLevel.ER_WITH_INSERT_FIELD = 0
+	config.GetGlobalConfig().IncLevel.ErWithInsertField = 0
 
 	// 测试表名大小写
 	sql = `drop table if exists t1;CREATE TABLE t1(c1 int);insert into T1 values(1);`
@@ -952,7 +974,7 @@ primary key(id)) comment 'test';`
 	s.testErrorCode(c, sql,
 		session.NewErr(session.ER_WRONG_NAME_FOR_INDEX, "NULL", "test_error_code_3"),
 		session.NewErr(session.ER_INDEX_NAME_IDX_PREFIX, "",
-			"test_error_code_3", config.GetGlobalConfig().Inc.IndexPrefix),
+			config.GetGlobalConfig().Inc.IndexPrefix, "test_error_code_3"),
 		session.NewErr(session.ER_TOO_LONG_KEY, "", indexMaxLength))
 
 	config.GetGlobalConfig().Inc.IndexPrefix = "idx_,idx1_"
@@ -963,7 +985,7 @@ primary key(id)) comment 'test';`
 	sql = "create table test_error_code_3(c1 int,c2 int,key idx_1(c1),key idx2_2(c2));"
 	s.testErrorCode(c, sql,
 		session.NewErr(session.ER_INDEX_NAME_IDX_PREFIX, "idx2_2",
-			"test_error_code_3", config.GetGlobalConfig().Inc.IndexPrefix),
+			config.GetGlobalConfig().Inc.IndexPrefix, "test_error_code_3"),
 	)
 
 	config.GetGlobalConfig().Inc.TablePrefix = "t_"
@@ -993,10 +1015,32 @@ primary key(id)) comment 'test';`
 	s.testErrorCode(c, sql,
 		session.NewErr(session.ER_INVALID_DEFAULT, "c1"))
 
+	sql = `CREATE TABLE t1(
+			c1 varchar(20) NOT NULL DEFAULT ''
+		) ENGINE = InnoDB SHARD_ROW_ID_BITS=4 PRE_SPLIT_REGIONS=2;`
+	s.testErrorCode(c, sql)
+
 	sql = `create table t1(id int primary key,
 			c1 datetime(6) DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP);`
 	s.testErrorCode(c, sql,
 		session.NewErrf("Invalid ON UPDATE clause for '%s' column.", "c1"))
+
+	config.GetGlobalConfig().Inc.MaxColumnCount = 2
+	sql = `create table t1(id int primary key,
+			c1 int,c2 int);`
+	s.testErrorCode(c, sql,
+		session.NewErr(session.ErrMaxColumnCount, "t1", 2, 3))
+	config.GetGlobalConfig().Inc.MaxColumnCount = 0
+
+	sql = `CREATE TABLE t1 (
+			id bigint(20) COMMENT 'id',
+			c1 double(10) DEFAULT '0',
+			c2 DECIMAL(10) DEFAULT '0',
+			c3 float(10) DEFAULT '0',
+			PRIMARY KEY (id)
+			) ENGINE=InnoDB comment = 'test';`
+	s.testErrorCode(c, sql,
+		session.NewErrf("Please specify the number of digits of type double (column: \"%s\").", "c1"))
 
 }
 
@@ -1055,15 +1099,15 @@ func (s *testSessionIncSuite) TestAlterTableAddColumn(c *C) {
 	// 数据类型 警告
 	sql = "drop table if exists t1;create table t1(id int);alter table t1 add column c2 bit;"
 	s.testErrorCode(c, sql,
-		session.NewErr(session.ER_INVALID_DATA_TYPE, "c2"))
+		session.NewErr(session.ER_INVALID_DATA_TYPE, "c2", "bit"))
 
 	sql = "drop table if exists t1;create table t1(id int);alter table t1 add column c2 enum('red', 'blue', 'black');"
 	s.testErrorCode(c, sql,
-		session.NewErr(session.ER_INVALID_DATA_TYPE, "c2"))
+		session.NewErr(session.ER_INVALID_DATA_TYPE, "c2", "enum"))
 
 	sql = "drop table if exists t1;create table t1(id int);alter table t1 add column c2 set('red', 'blue', 'black');"
 	s.testErrorCode(c, sql,
-		session.NewErr(session.ER_INVALID_DATA_TYPE, "c2"))
+		session.NewErr(session.ER_INVALID_DATA_TYPE, "c2", "set"))
 
 	// char列建议
 	config.GetGlobalConfig().Inc.MaxCharLength = 100
@@ -1116,8 +1160,8 @@ func (s *testSessionIncSuite) TestAlterTableAddColumn(c *C) {
 	config.GetGlobalConfig().Inc.EnableBlobType = false
 	sql = ("drop table if exists t1;create table t1(id int);alter table t1 add column c1 blob;alter table t1 add column c2 text;")
 	s.testManyErrors(c, sql,
-		session.NewErr(session.ER_USE_TEXT_OR_BLOB, "c1"),
-		session.NewErr(session.ER_USE_TEXT_OR_BLOB, "c2"),
+		session.NewErr(session.ER_INVALID_DATA_TYPE, "c1", "blob"),
+		session.NewErr(session.ER_INVALID_DATA_TYPE, "c2", "text"),
 	)
 
 	config.GetGlobalConfig().Inc.EnableBlobType = true
@@ -1169,7 +1213,7 @@ func (s *testSessionIncSuite) TestAlterTableAddColumn(c *C) {
 		config.GetGlobalConfig().Inc.EnableJsonType = false
 		sql = "drop table if exists t1;create table t1 (c1 int primary key);alter table t1 add c2 json;"
 		s.testErrorCode(c, sql,
-			session.NewErr(session.ErrJsonTypeSupport, "c2"))
+			session.NewErr(session.ER_INVALID_DATA_TYPE, "c2", "json"))
 	}
 
 	sql = "drop table if exists t1;create table t1 (id int primary key);alter table t1 add column (c1 int,c2 varchar(20));"
@@ -1197,6 +1241,79 @@ func (s *testSessionIncSuite) TestAlterTableAddColumn(c *C) {
 			alter table t1 add index c1(c1);`
 	s.testErrorCode(c, sql,
 		session.NewErr(session.ER_DUP_INDEX, "c1", "test_inc", "t1"))
+
+	config.GetGlobalConfig().Inc.MaxVarcharLength = 100
+	sql = `drop table if exists t1;
+			create table t1(id int,c1 varchar(200));`
+	s.testErrorCode(c, sql,
+		session.NewErr(session.ErrMaxVarcharLength, "c1", 100))
+
+	sql = `drop table if exists t1;
+			create table t1(id int,key c1(id));
+			alter table t1 add column c1 varchar(1000);`
+	s.testErrorCode(c, sql,
+		session.NewErr(session.ErrMaxVarcharLength, "c1", 100))
+
+	sql = `drop table if exists t1;
+		create table t1(id int,c1 char(10));
+		alter table t1 modify column c1 varchar(1000);`
+	s.testErrorCode(c, sql,
+		session.NewErr(session.ErrMaxVarcharLength, "c1", 100))
+
+	sql = `drop table if exists t1;
+		create table t1(id int,c1 char(10));
+		alter table t1 modify column c1 char(100);`
+	s.testErrorCode(c, sql)
+
+	// 	ALTER TABLE t1 ADD FULLTEXT INDEX ft_index (c1) WITH PARSER ngram;
+
+	// alter table t1 add index ix_1(c1) /*!50100 WITH PARSER `ngram` */;
+	sql = `drop table if exists t1;
+		create table t1(id int,c1 char(10));
+		ALTER TABLE t1 ADD FULLTEXT INDEX ft_index (c1) WITH PARSER ngram;`
+	s.testErrorCode(c, sql)
+
+	sql = `drop table if exists t1;
+		create table t1(id int,c1 char(10));
+		alter table t1 add index ix_1(c1) /*!50100 WITH PARSER ngram */;`
+	s.testErrorCode(c, sql,
+		session.NewErrf("WITH PARSER option can be used only with FULLTEXT indexes."))
+
+	config.GetGlobalConfig().Inc.MaxColumnCount = 2
+	sql = `drop table if exists t1;
+	create table t1(id int,c1 char(10));
+	alter table t1 add column c2 int;`
+	s.testErrorCode(c, sql,
+		session.NewErr(session.ErrMaxColumnCount, "t1", 2, 3))
+	config.GetGlobalConfig().Inc.MaxColumnCount = 0
+
+	sql = `drop table if exists t1;
+		create table t1(id int,c1 char(10));
+		alter table t1 add column cc char(20) unique key;`
+	s.testErrorCode(c, sql)
+}
+
+func (s *testSessionIncSuite) TestAlterTableRenameColumn(c *C) {
+	config.GetGlobalConfig().Inc.CheckColumnComment = false
+	config.GetGlobalConfig().Inc.CheckTableComment = false
+	config.GetGlobalConfig().Inc.EnableDropTable = true
+
+	s.mustRunExec(c, "drop table if exists t1;create table t1(id int primary key,c1 int);")
+
+	if s.DBVersion < 80000 {
+		return
+	}
+
+	sql = `alter table t1 rename column c1 to c2;`
+	s.testErrorCode(c, sql)
+
+	sql = `alter table t1 rename column c1 to id;`
+	s.testErrorCode(c, sql,
+		session.NewErr(session.ER_COLUMN_EXISTED, "t1.id"))
+
+	sql = `alter table t1 rename column c2 to id;`
+	s.testErrorCode(c, sql,
+		session.NewErr(session.ER_COLUMN_NOT_EXISTED, "t1.c2"))
 }
 
 func (s *testSessionIncSuite) TestAlterTableAlterColumn(c *C) {
@@ -1237,15 +1354,15 @@ func (s *testSessionIncSuite) TestAlterTableModifyColumn(c *C) {
 	// 数据类型 警告
 	sql = "create table t1(id bit);alter table t1 modify column id bit;"
 	s.testErrorCode(c, sql,
-		session.NewErr(session.ER_INVALID_DATA_TYPE, "id"))
+		session.NewErr(session.ER_INVALID_DATA_TYPE, "id", "bit"))
 
 	sql = "create table t1(id enum('red', 'blue'));alter table t1 modify column id enum('red', 'blue', 'black');"
 	s.testErrorCode(c, sql,
-		session.NewErr(session.ER_INVALID_DATA_TYPE, "id"))
+		session.NewErr(session.ER_INVALID_DATA_TYPE, "id", "enum"))
 
 	sql = "create table t1(id set('red'));alter table t1 modify column id set('red', 'blue', 'black');"
 	s.testErrorCode(c, sql,
-		session.NewErr(session.ER_INVALID_DATA_TYPE, "id"))
+		session.NewErr(session.ER_INVALID_DATA_TYPE, "id", "set"))
 
 	// char列建议
 	config.GetGlobalConfig().Inc.MaxCharLength = 100
@@ -1278,10 +1395,10 @@ func (s *testSessionIncSuite) TestAlterTableModifyColumn(c *C) {
 
 	// blob/text字段
 	config.GetGlobalConfig().Inc.EnableBlobType = false
-	sql = ("create table t1(id int,c1 varchar(10));alter table t1 modify column c1 blob;alter table t1 modify column c1 text;")
+	config.GetGlobalConfig().Inc.CheckColumnTypeChange = false
+	sql = ("create table t1(id int,c1 varchar(10));alter table t1 modify column c1 blob;")
 	s.testManyErrors(c, sql,
-		session.NewErr(session.ER_USE_TEXT_OR_BLOB, "c1"),
-		session.NewErr(session.ER_USE_TEXT_OR_BLOB, "c1"),
+		session.NewErr(session.ER_INVALID_DATA_TYPE, "c1", "blob"),
 	)
 
 	config.GetGlobalConfig().Inc.EnableBlobType = true
@@ -1398,6 +1515,11 @@ func (s *testSessionIncSuite) TestAlterTableModifyColumn(c *C) {
 
 	sql = "alter table t1 modify c1 int not null;alter table t1 add primary key(id,c1);"
 	s.testErrorCode(c, sql)
+
+	config.GetGlobalConfig().Inc.EnableIdentiferKeyword = false
+	s.mustRunExec(c, "drop table if exists t1;create table t1(id int not null,`alter` int);")
+	sql = "alter table t1 modify `alter` bigint;"
+	s.testErrorCode(c, sql)
 }
 
 func (s *testSessionIncSuite) TestAlterTableChangeColumn(c *C) {
@@ -1417,6 +1539,13 @@ func (s *testSessionIncSuite) TestAlterTableChangeColumn(c *C) {
 
 	config.GetGlobalConfig().Inc.EnableChangeColumn = true
 
+	config.GetGlobalConfig().Inc.EnableIdentiferKeyword = false
+	s.mustRunExec(c, "drop table if exists t1;create table t1(id int not null,`alter` int);")
+	sql = "alter table t1 change `alter` `alter` bigint;"
+	s.testErrorCode(c, sql)
+	sql = "alter table t1 change `alter` `delete` bigint;"
+	s.testErrorCode(c, sql,
+		session.NewErr(session.ER_IDENT_USE_KEYWORD, "delete"))
 }
 
 func (s *testSessionIncSuite) TestAlterTableDropColumn(c *C) {
@@ -1440,7 +1569,7 @@ func (s *testSessionIncSuite) TestAlterTableDropColumn(c *C) {
 
 func (s *testSessionIncSuite) TestInsert(c *C) {
 	config.GetGlobalConfig().Inc.CheckInsertField = false
-	config.GetGlobalConfig().IncLevel.ER_WITH_INSERT_FIELD = 0
+	config.GetGlobalConfig().IncLevel.ErWithInsertField = 0
 
 	// 表不存在
 	sql = "insert into t1 values(1,1);"
@@ -1471,12 +1600,12 @@ func (s *testSessionIncSuite) TestInsert(c *C) {
 
 	// 字段警告
 	config.GetGlobalConfig().Inc.CheckInsertField = true
-	config.GetGlobalConfig().IncLevel.ER_WITH_INSERT_FIELD = 1
+	config.GetGlobalConfig().IncLevel.ErWithInsertField = 1
 	sql = "create table t1(id int,c1 int);insert into t1 values(1,1);"
 	s.testErrorCode(c, sql,
 		session.NewErr(session.ER_WITH_INSERT_FIELD))
 	config.GetGlobalConfig().Inc.CheckInsertField = false
-	config.GetGlobalConfig().IncLevel.ER_WITH_INSERT_FIELD = 0
+	config.GetGlobalConfig().IncLevel.ErWithInsertField = 0
 
 	sql = "create table t1(id int,c1 int);insert into t1(id) values();"
 	s.testErrorCode(c, sql,
@@ -1851,6 +1980,39 @@ PARTITION BY RANGE (TO_DAYS(hiredate) ) (
 		  exchange PARTITION p1 WITH TABLE arch_customer_login_log;`
 	s.mustRunExec(c, sql)
 
+	s.mustRunExec(c, `drop table if exists t1;`)
+	sql = `create table t1(id int primary key,c1 varchar(100),bill_date datetime);`
+	s.mustRunExec(c, sql)
+
+	sql = `alter table t1 partition by range (to_days(bill_date)) (
+		partition p202201 values less than (to_days('2022-02-01')) ENGINE = InnoDB,
+		partition p202202 values less than (to_days('2022-03-01')) ENGINE = InnoDB
+		);`
+	s.testErrorCode(c, sql)
+
+	sql = `alter table t1 remove partitioning;`
+	s.testErrorCode(c, sql,
+		session.NewErrf("Partition management on a not partitioned table is not possible."))
+
+	sql = `drop table if exists t1;CREATE TABLE t1 (
+			customer_id int(10) unsigned NOT NULL COMMENT '登录用户ID',
+			login_time DATETIME NOT NULL COMMENT '用户登录时间',
+			login_ip int(10) unsigned NOT NULL COMMENT '登录IP',
+			login_type tinyint(4) NOT NULL COMMENT '登录类型:0未成功 1成功'
+		  ) ENGINE=InnoDB
+		  PARTITION BY RANGE (YEAR(login_time))(
+		  PARTITION p0 VALUES LESS THAN (2017),
+		  PARTITION p1 VALUES LESS THAN (2018));		  `
+	s.mustRunExec(c, sql)
+
+	sql = `alter table t1 partition by range (to_days(bill_date)) (
+			partition p202201 values less than (to_days('2022-02-01')) ENGINE = InnoDB,
+			partition p202202 values less than (to_days('2022-03-01')) ENGINE = InnoDB
+			);`
+	s.testErrorCode(c, sql)
+
+	sql = `alter table t1 remove partitioning;`
+	s.testErrorCode(c, sql)
 }
 
 func (s *testSessionIncSuite) TestSubSelect(c *C) {
@@ -1872,7 +2034,7 @@ func (s *testSessionIncSuite) TestUpdate(c *C) {
 	}()
 
 	config.GetGlobalConfig().Inc.CheckInsertField = false
-	config.GetGlobalConfig().IncLevel.ER_WITH_INSERT_FIELD = 0
+	config.GetGlobalConfig().IncLevel.ErWithInsertField = 0
 	config.GetGlobalConfig().Inc.EnableSetEngine = true
 
 	// 表不存在
@@ -2174,7 +2336,7 @@ WHERE tt1.id=1;`
 
 func (s *testSessionIncSuite) TestDelete(c *C) {
 	config.GetGlobalConfig().Inc.CheckInsertField = false
-	config.GetGlobalConfig().IncLevel.ER_WITH_INSERT_FIELD = 0
+	config.GetGlobalConfig().IncLevel.ErWithInsertField = 0
 
 	// 表不存在
 	sql = "delete from t1 where c1 = 1;"
@@ -2588,15 +2750,34 @@ func (s *testSessionIncSuite) TestAlterTableAddIndex(c *C) {
 	s.testErrorCode(c, sql,
 		session.NewErr(session.ER_TOO_MANY_KEY_PARTS, "ix_1", "geom", 1))
 
-	sql = `create table t1(id int,c1 int);
-		alter table t1 add index idx (c1) visible;`
-	s.testErrorCode(c, sql,
-		session.NewErr(session.ErrUseIndexVisibility))
+	if s.DBVersion < 80000 {
+		sql = `create table t1(id int,c1 int);
+				alter table t1 add index idx (c1) visible;`
+		s.testErrorCode(c, sql,
+			session.NewErr(session.ErrUseIndexVisibility))
 
-	sql = `create table t1(id int,c1 int);
+		sql = `create table t1(id int,c1 int);
+				alter table t1 add index idx2 (c1) invisible;`
+		s.testErrorCode(c, sql,
+			session.NewErr(session.ErrUseIndexVisibility))
+
+		sql = `create table t1(id int,c1 int,key idx(c1));
+				alter table t1 alter index idx visible;`
+		s.testErrorCode(c, sql,
+			session.NewErr(session.ErrUseIndexVisibility))
+	} else {
+		sql = `create table t1(id int,c1 int);
+		alter table t1 add index idx (c1) visible;`
+		s.testErrorCode(c, sql)
+
+		sql = `create table t1(id int,c1 int);
 		alter table t1 add index idx2 (c1) invisible;`
-	s.testErrorCode(c, sql,
-		session.NewErr(session.ErrUseIndexVisibility))
+		s.testErrorCode(c, sql)
+
+		sql = `create table t1(id int,c1 int,key idx(c1));
+				alter table t1 alter index idx visible;`
+		s.testErrorCode(c, sql)
+	}
 }
 
 func (s *testSessionIncSuite) TestAlterTableDropIndex(c *C) {
@@ -2693,6 +2874,20 @@ func (s *testSessionIncSuite) TestAlterTable(c *C) {
 	s.testErrorCode(c, sql,
 		session.NewErr(session.ErrCollationNotSupport, "utf8_bin"))
 
+	config.GetGlobalConfig().Inc.EnableSetCharset = true
+	config.GetGlobalConfig().Inc.EnableSetCollation = true
+	config.GetGlobalConfig().Inc.SupportCharset = "utf8mb4"
+	config.GetGlobalConfig().Inc.SupportCollation = "utf8_general_ci,utf8mb4_general_ci,utf8mb4_0900_ai_ci,utf8mb4_zh_0900_as_cs"
+	sql = `drop table if exists t1;
+		create table t1(id int primary key);
+		alter table t1 DEFAULT CHARSET = utf8mb4 COLLATE utf8mb4_zh_0900_as_cs;`
+	if s.DBVersion >= 80000 {
+		s.testErrorCode(c, sql)
+	} else {
+		s.testErrorCode(c, sql,
+			session.NewErrf("Collation utf8mb4_zh_0900_as_cs is only supported after mysql 8.0."))
+	}
+
 }
 
 func (s *testSessionIncSuite) TestCreateTablePrimaryKey(c *C) {
@@ -2781,13 +2976,13 @@ func (s *testSessionIncSuite) TestTableCharsetCollation(c *C) {
 	s.testErrorCode(c, sql)
 
 	config.GetGlobalConfig().Inc.SupportCharset = "utf8,utf8mb4"
-	config.GetGlobalConfig().Inc.SupportCollation = "utf8_general_ci,utf8mb4_general_ci,utf8mb4_0900_ai_ci"
-	sql = `create table t1(id int,c1 varchar(20)) DEFAULT CHARSET = utf8mb4 COLLATE utf8mb4_0900_ai_ci;`
+	config.GetGlobalConfig().Inc.SupportCollation = "utf8_general_ci,utf8mb4_general_ci,utf8mb4_0900_ai_ci,utf8mb4_zh_0900_as_cs"
+	sql = `create table t1(id int,c1 varchar(20)) DEFAULT CHARSET = utf8mb4 COLLATE utf8mb4_zh_0900_as_cs;`
 	if s.DBVersion >= 80000 {
 		s.testErrorCode(c, sql)
 	} else {
 		s.testErrorCode(c, sql,
-			session.NewErrf("Collation utf8mb4_0900_ai_ci is only supported after mysql 8.0."))
+			session.NewErrf("Collation utf8mb4_zh_0900_as_cs is only supported after mysql 8.0."))
 	}
 
 	config.GetGlobalConfig().Inc.SupportCharset = "utf8"
@@ -2795,7 +2990,7 @@ func (s *testSessionIncSuite) TestTableCharsetCollation(c *C) {
 	sql = `create table t1(id int,c1 varchar(20)) character set utf8mb4 COLLATE utf8_bin;`
 	s.testErrorCode(c, sql,
 		session.NewErr(session.ErrCharsetNotSupport, "utf8"),
-		session.NewErrf("字符集和排序规则不匹配!"))
+		session.NewErrf("COLLATION 'utf8_bin' is not valid for CHARACTER SET 'utf8mb4'!"))
 
 	config.GetGlobalConfig().Inc.SupportCollation = "utf8_bin"
 	sql = `create table t1(id int,c1 varchar(20)) character set utf8mb4 COLLATE utf8mb4_bin;`
@@ -2875,7 +3070,7 @@ func (s *testSessionIncSuite) TestTimestampType(c *C) {
 	// sql = `create table t4 (id int unsigned not null auto_increment primary key comment 'primary key', a timestamp not null default 0 comment 'a') comment 'test';`
 	sql = `create table t4 (id int unsigned not null auto_increment primary key comment 'primary key', a timestamp not null comment 'a') comment 'test';`
 	s.testErrorCode(c, sql,
-		session.NewErr(session.ER_INVALID_DATA_TYPE, "a"))
+		session.NewErr(session.ER_INVALID_DATA_TYPE, "a", "timestamp"))
 	config.GetGlobalConfig().Inc.EnableTimeStampType = true
 }
 
@@ -2905,6 +3100,19 @@ func (s *testSessionIncSuite) TestIdentifierUpper(c *C) {
 	)
 
 	config.GetGlobalConfig().Inc.CheckIdentifierUpper = false
+}
+
+func (s *testSessionIncSuite) TestIdentifierLower(c *C) {
+	config.GetGlobalConfig().Inc.CheckIdentifierLower = true
+	sql := `drop table if exists hello;create table hello(id int,c1 float, c2 double,key idx_c1(c1),unique index uniq_A(c2));`
+	s.testErrorCode(c, sql,
+		session.NewErr(session.ErrIdentifierLower, "uniq_A"),
+	)
+
+	sql = `drop table if exists hello;create table hello(id int,c1 float, c2 double,key idx_c1(c1),unique index uniq_a(c2));`
+	s.testErrorCode(c, sql)
+
+	config.GetGlobalConfig().Inc.CheckIdentifierLower = false
 }
 
 func (s *testSessionIncSuite) TestMaxKeys(c *C) {
@@ -3247,10 +3455,10 @@ func (s *testSessionIncSuite) TestBlobAndText(c *C) {
 		c3 mediumblob,
 		c4 longblob);`
 	s.testErrorCode(c, sql,
-		session.NewErr(session.ER_USE_TEXT_OR_BLOB, "c1"),
-		session.NewErr(session.ER_USE_TEXT_OR_BLOB, "c2"),
-		session.NewErr(session.ER_USE_TEXT_OR_BLOB, "c3"),
-		session.NewErr(session.ER_USE_TEXT_OR_BLOB, "c4"))
+		session.NewErr(session.ER_INVALID_DATA_TYPE, "c1", "tinyblob"),
+		session.NewErr(session.ER_INVALID_DATA_TYPE, "c2", "blob"),
+		session.NewErr(session.ER_INVALID_DATA_TYPE, "c3", "mediumblob"),
+		session.NewErr(session.ER_INVALID_DATA_TYPE, "c4", "longblob"))
 
 	sql = `create table t2(id int primary key,
 			c1 tinytext ,
@@ -3258,10 +3466,10 @@ func (s *testSessionIncSuite) TestBlobAndText(c *C) {
 			c3 mediumtext,
 			c4 longtext);`
 	s.testErrorCode(c, sql,
-		session.NewErr(session.ER_USE_TEXT_OR_BLOB, "c1"),
-		session.NewErr(session.ER_USE_TEXT_OR_BLOB, "c2"),
-		session.NewErr(session.ER_USE_TEXT_OR_BLOB, "c3"),
-		session.NewErr(session.ER_USE_TEXT_OR_BLOB, "c4"))
+		session.NewErr(session.ER_INVALID_DATA_TYPE, "c1", "tinytext"),
+		session.NewErr(session.ER_INVALID_DATA_TYPE, "c2", "text"),
+		session.NewErr(session.ER_INVALID_DATA_TYPE, "c3", "mediumtext"),
+		session.NewErr(session.ER_INVALID_DATA_TYPE, "c4", "longtext"))
 
 }
 
@@ -3270,10 +3478,10 @@ func (s *testSessionIncSuite) TestWhereCondition(c *C) {
 	s.mustRunExec(c, "drop table if exists t1,t2;create table t1(id int);")
 
 	sql = "update t1 set id = 1 where 123;"
-	config.GetGlobalConfig().IncLevel.ErrUseValueExpr = 0
+	config.GetGlobalConfig().IncLevel.ErUseValueExpr = 0
 	s.testErrorCode(c, sql)
 
-	config.GetGlobalConfig().IncLevel.ErrUseValueExpr = 1
+	config.GetGlobalConfig().IncLevel.ErUseValueExpr = 1
 	s.testErrorCode(c, sql,
 		session.NewErr(session.ErrUseValueExpr))
 
@@ -3311,4 +3519,78 @@ func (s *testSessionIncSuite) TestWhereCondition(c *C) {
 	update t1 set id = 1 where id is true;
 	`
 	s.testManyErrors(c, sql)
+}
+
+func (s *testSessionIncSuite) TestGroupBy(c *C) {
+	sql := ""
+	s.mustRunExec(c, `drop table if exists system_menu;
+	create table system_menu(id int primary key,pid int ,c1 int);`)
+
+	sql = `SELECT count(pid) as as_count_pid,pid as as_pid FROM system_menu group by as_count_pid;`
+	if strings.Contains(s.sqlMode, "ONLY_FULL_GROUP_BY") {
+		s.testErrorCode(c, sql,
+			session.NewErrf("Can't group on 'as_count_pid'."))
+	} else {
+		s.testErrorCode(c, sql)
+	}
+
+	sql = `SELECT count(pid) as as_count_pid,pid as as_pid FROM system_menu group by as_pid;`
+	s.testErrorCode(c, sql)
+
+	sql = `SELECT count(pid) as as_count_pid,c1 as as_pid FROM system_menu group by c1;`
+	s.testErrorCode(c, sql)
+
+	sql = `SELECT count(pid) as as_count_pid,id as as_pid FROM system_menu group by pid;`
+	if strings.Contains(s.sqlMode, "ONLY_FULL_GROUP_BY") {
+		s.testErrorCode(c, sql,
+			session.NewErr(session.ErrFieldNotInGroupBy, 2, "SELECT list", "id"))
+	} else {
+		s.testErrorCode(c, sql)
+	}
+
+	sql = `SELECT count(pid) as as_count_pid,concat(c1,'..') as as_pid FROM system_menu group by pid;`
+	if strings.Contains(s.sqlMode, "ONLY_FULL_GROUP_BY") {
+		s.testErrorCode(c, sql,
+			session.NewErr(session.ErrFieldNotInGroupBy, 2, "SELECT list", "CONCAT(`c1`, '..')"))
+	} else {
+		s.testErrorCode(c, sql)
+	}
+
+}
+
+// TestCheckAuditSetting 自动校准旧的审核规则和自定义规则, 保证两者一致
+func (s *testSessionIncSuite) TestCheckAuditSetting(c *C) {
+	configLevel := &config.GetGlobalConfig().IncLevel
+	configLevel.ErUseEnum = 1
+	configLevel.ErJsonTypeSupport = 2
+	configLevel.ErUseTextOrBlob = 2
+
+	obj := config.GetGlobalConfig().IncLevel
+	t := reflect.TypeOf(obj)
+	v := reflect.ValueOf(obj)
+
+	incLevel := make(map[string]uint8, v.NumField())
+
+	for i := 0; i < v.NumField(); i++ {
+		if v.Field(i).CanInterface() {
+			a := v.Field(i).Uint()
+			if a > 2 {
+				a = 2
+			}
+			if k := t.Field(i).Tag.Get("toml"); k != "" {
+				incLevel[k] = uint8(a)
+			} else {
+				incLevel[t.Field(i).Name] = uint8(a)
+			}
+		}
+	}
+
+	for e := range session.ErrorsDefault {
+		name := e.String()
+		if level, ok := incLevel[name]; ok {
+			v := session.GetErrorLevel(e)
+			// log.Errorf("name:%v,incLevel:%d, config: %d", name, level, v)
+			c.Assert(level, Equals, v, Commentf("name:%v,incLevel:%d, config: %d", name, level, v))
+		}
+	}
 }

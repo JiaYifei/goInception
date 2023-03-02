@@ -25,6 +25,14 @@ else
 	GOTEST    := CGO_ENABLED=1 $(GO) test -p 3
 endif
 
+ifeq "$(GOVERALLS_SERVICE)" ""
+	GOVERALLS_SERVICE    := "circle-ci"
+	GOVERALLS_PROJECT	 := "/go/src/github.com/hanchuanchuan/goInception"
+else
+	GOVERALLS_SERVICE    := "github"
+	GOVERALLS_PROJECT	 := "/home/runner/work/goInception/goInception"
+endif
+
 OVERALLS  := CGO_ENABLED=1 GO111MODULE=on overalls
 GOVERALLS := goveralls
 
@@ -51,7 +59,7 @@ CHECK_LDFLAGS += $(LDFLAGS) ${TEST_LDFLAGS}
 
 TARGET = ""
 
-.PHONY: all build update parser clean todo test gotest interpreter server dev benchkv benchraw check parserlib checklist testapi docs
+.PHONY: all build update parser clean todo test gotest interpreter server dev benchkv benchraw check parserlib checklist testapi docs level
 
 default: server buildsucc
 
@@ -197,9 +205,9 @@ ifeq ("$(TRAVIS_COVERAGE)", "1")
 	go get github.com/go-playground/overalls
 	# go get github.com/mattn/goveralls
 	# $(OVERALLS) -project=github.com/hanchuanchuan/goInception -covermode=count -ignore='.git,vendor,cmd,docs,LICENSES' || { $(GOFAIL_DISABLE); exit 1; }
-	# $(GOVERALLS) -service=travis-ci -coverprofile=overalls.coverprofile || { $(GOFAIL_DISABLE); exit 1; }
+	# $(GOVERALLS) -service=$(GOVERALLS_SERVICE) -coverprofile=overalls.coverprofile || { $(GOFAIL_DISABLE); exit 1; }
 
-	$(OVERALLS) -project=github.com/hanchuanchuan/goInception -covermode=count -ignore='.git,vendor,cmd,docs,LICENSES' -concurrency=1 -- -short || { $(GOFAIL_DISABLE); exit 1; }
+	$(OVERALLS) -project=$(GOVERALLS_PROJECT) -covermode=count -ignore='.git,vendor,cmd,docs,LICENSES' -concurrency=1 -- -short || { $(GOFAIL_DISABLE); exit 1; }
 else
 
 ifeq ("$(API)", "1")
@@ -371,3 +379,7 @@ docker-push:
 
 docs:
 	$(shell bash docs/deploy.sh)
+
+level:
+	$(GO) run config/generate_levels/main.go
+	gofmt -w config/error_level.go

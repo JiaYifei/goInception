@@ -96,6 +96,7 @@ type Session interface {
 
 	// 用以测试
 	GetAlterTablePostPart(sql string, isPtOSC bool) string
+	InitDisableTypes()
 
 	LoadOptions(opt SourceOptions) error
 	Audit(ctx context.Context, sql string) ([]Record, error)
@@ -180,7 +181,7 @@ type session struct {
 	// 备份库
 	backupDBCacheList map[string]bool
 	// 备份库中的备份表
-	backupTableCacheList map[string]bool
+	backupTableCacheList map[string]BackupTable
 
 	inc   config.Inc
 	osc   config.Osc
@@ -202,7 +203,7 @@ type session struct {
 	lastBackupTable string
 
 	// 总的操作行数,当备份时用以计算备份进度
-	totalChangeRows int
+	totalChangeRows int64
 	backupTotalRows int
 
 	// 数据库类型
@@ -258,11 +259,14 @@ type session struct {
 	// PXC集群节点
 	isClusterNode bool
 
-	// 是否检查歧义性. 在order by时忽略该检查,其他时候正常开启
+	// 是否检查歧义性. 在group by/order by时忽略该检查,其他时候正常开启
 	checkAmbiguous bool
 
 	// masking 语法树解析功能
 	maskingFields []MaskingFieldInfo
+
+	// 统一处理禁用的数据类型
+	disableTypes map[string]uint8
 }
 
 func (s *session) getMembufCap() int {

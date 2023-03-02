@@ -265,6 +265,7 @@ import (
 	algorithm              "ALGORITHM"
 	any                    "ANY"
 	ascii                  "ASCII"
+	attributes             "ATTRIBUTES"
 	autoIncrement          "AUTO_INCREMENT"
 	autoRandom             "AUTO_RANDOM"
 	autoRandomBase         "AUTO_RANDOM_BASE"
@@ -370,10 +371,13 @@ import (
 	none                   "NONE"
 	offset                 "OFFSET"
 	only                   "ONLY"
+	parser                 "PARSER"
+	partitioning           "PARTITIONING"
 	password               "PASSWORD"
 	partitions             "PARTITIONS"
 	pipesAsOr
 	plugins                "PLUGINS"
+	preSplitRegions        "PRE_SPLIT_REGIONS"
 	prepare                "PREPARE"
 	privileges             "PRIVILEGES"
 	process                "PROCESS"
@@ -386,6 +390,8 @@ import (
 	recover                "RECOVER"
 	redundant              "REDUNDANT"
 	reload                 "RELOAD"
+	remove                 "REMOVE"
+	reorganize             "REORGANIZE"
 	repair                 "REPAIR"
 	repeatable             "REPEATABLE"
 	replication            "REPLICATION"
@@ -634,9 +640,10 @@ import (
 	AdminShowSlow                 "Admin Show Slow statement"
 	AllOrPartitionNameList        "All or partition name list"
 	AlgorithmClause               "Alter table algorithm"
-	AlterTableOptionListOpt       "alter table option list opt"
+	AlterTablePartitionOpt        "Alter table partition option"
 	AlterTableSpec                "Alter table specification"
 	AlterTableSpecList            "Alter table specification list"
+	AlterTableSpecListOpt         "Alter table specification list optional"
 	AnyOrAll                      "Any or All for subquery"
 	Assignment                    "assignment"
 	AssignmentList                "assignment list"
@@ -666,7 +673,7 @@ import (
 	ConstraintKeywordOpt          "Constraint Keyword or empty"
 	CreateTableOptionListOpt      "create table option list opt"
 	CreateTableSelectOpt          "Select/Union statement in CREATE TABLE ... SELECT"
-	CreateViewSelectOpt                    "Select/Union statement in CREATE VIEW ... AS SELECT"
+	CreateViewSelectOpt           "Select/Union statement in CREATE VIEW ... AS SELECT"
 	DatabaseOption                "CREATE Database specification"
 	DatabaseOptionList            "CREATE Database specification list"
 	DatabaseOptionListOpt         "CREATE Database specification list opt"
@@ -716,7 +723,9 @@ import (
 	IndexNameAndTypeOpt           "index name and index type"
 	IndexNameList                 "index name list"
 	IndexOption                   "Index Option"
+	PartitionIndexOpt             "Partition Index option"
 	IndexOptionList               "Index Option List or empty"
+	PartitionIndexOptionList      "Partition Index option list or empty"
 	IndexType                     "index type"
 	IndexTypeName                 "index type name"
 	IndexTypeOpt                  "optional index type"
@@ -882,6 +891,7 @@ import (
 	LengthNum                     "Field length num(uint64)"
 	HintTableList                 "Table list in optimizer hint"
 	TableOptimizerHints           "Table level optimizer hints"
+	AttributesOpt                 "Attributes options"
 
 %type	<ident>
 	AsOpt             "AS or EmptyString"
@@ -990,11 +1000,15 @@ Start:
  * See https://dev.mysql.com/doc/refman/5.7/en/alter-table.html
  *******************************************************************************************/
 AlterTableStmt:
-	"ALTER" IgnoreOptional "TABLE" TableName AlterTableSpecList
+	"ALTER" IgnoreOptional "TABLE" TableName AlterTableSpecListOpt AlterTablePartitionOpt
 	{
+		specs := $5.([]*ast.AlterTableSpec)
+		if $6 != nil {
+			specs = append(specs, $6.(*ast.AlterTableSpec))
+		}
 		$$ = &ast.AlterTableStmt{
 			Table: $4.(*ast.TableName),
-			Specs: $5.([]*ast.AlterTableSpec),
+			Specs: specs,
 		}
 	}
 |	"ALTER" IgnoreOptional "TABLE" TableName "ANALYZE" "PARTITION" PartitionNameList MaxNumBuckets
@@ -1012,8 +1026,59 @@ AlterTableStmt:
 		}
 	}
 
+AttributesOpt:
+	"ATTRIBUTES" EqOpt "DEFAULT"
+	{
+		$$ = &ast.AttributesSpec{Default: true}
+	}
+|	"ATTRIBUTES" EqOpt stringLit
+	{
+		$$ = &ast.AttributesSpec{Default: false, Attributes: $3}
+	}
+
+AlterTablePartitionOpt:
+	PartitionOpt
+	{
+		if $1 != nil {
+			$$ = &ast.AlterTableSpec{
+				Tp:        ast.AlterTablePartition,
+				Partition: $1.(*ast.PartitionOptions),
+			}
+		} else {
+			$$ = nil
+		}
+	}
+|	"REMOVE" "PARTITIONING"
+	{
+		$$ = &ast.AlterTableSpec{
+			Tp: ast.AlterTableRemovePartitioning,
+		}
+	}
+|	"REORGANIZE" "PARTITION" NoWriteToBinLogAliasOpt ReorganizePartitionRuleOpt
+	{
+		ret := $4.(*ast.AlterTableSpec)
+		ret.NoWriteToBinlog = $3.(bool)
+		$$ = ret
+	}
+|	"PARTITION" Identifier AttributesOpt
+	{
+		$$ = &ast.AlterTableSpec{
+			Tp:             ast.AlterTablePartitionAttributes,
+			PartitionNames: []model.CIStr{model.NewCIStr($2)},
+			AttributesSpec: $3.(*ast.AttributesSpec),
+		}
+	}
+|	"PARTITION" Identifier PartDefOptionList
+	{
+		$$ = &ast.AlterTableSpec{
+			Tp:             ast.AlterTablePartitionOptions,
+			PartitionNames: []model.CIStr{model.NewCIStr($2)},
+			Options:        $3.([]*ast.TableOption),
+		}
+	}
+
 AlterTableSpec:
-	AlterTableOptionListOpt
+	TableOptionList %prec higherThanComma
 	{
 		$$ = &ast.AlterTableSpec{
 			Tp:      ast.AlterTableOption,
@@ -1232,6 +1297,16 @@ AlterTableSpec:
 			NewColumns: []*ast.ColumnDef{colDef},
 		}
 	}
+|	"RENAME" "COLUMN" Identifier "TO" Identifier
+	{
+		oldColName := &ast.ColumnName{Name: model.NewCIStr($3)}
+		newColName := &ast.ColumnName{Name: model.NewCIStr($5)}
+		$$ = &ast.AlterTableSpec{
+			Tp:            ast.AlterTableRenameColumn,
+			OldColumnName: oldColName,
+			NewColumnName: newColName,
+		}
+	}
 |	"RENAME" "TO" TableName
 	{
 		$$ = &ast.AlterTableSpec{
@@ -1268,11 +1343,12 @@ AlterTableSpec:
 			LockType: $1.(ast.LockType),
 		}
 	}
-|	"ALGORITHM" EqOpt AlterAlgorithm
+|	AlgorithmClause
 	{
 		// Parse it and ignore it. Just for compatibility.
 		$$ = &ast.AlterTableSpec{
-			Tp: ast.AlterTableAlgorithm,
+			Tp:        ast.AlterTableAlgorithm,
+			Algorithm: $1.(ast.AlgorithmType),
 		}
 	}
 |	"FORCE"
@@ -1282,11 +1358,14 @@ AlterTableSpec:
 			Tp: ast.AlterTableForce,
 		}
 	}
-
-AlterAlgorithm:
-	"DEFAULT"
-|	"INPLACE"
-|	"COPY"
+|	"ALTER" "INDEX" Identifier IndexInvisible
+	{
+		$$ = &ast.AlterTableSpec{
+			Tp:         ast.AlterTableIndexInvisible,
+			IndexName:  model.NewCIStr($3),
+			Visibility: $4.(ast.IndexVisibility),
+		}
+	}
 
 ReorganizePartitionRuleOpt:
 	/* empty */ %prec lowerThanRemove
@@ -1349,7 +1428,7 @@ AlgorithmClause:
 	}
 |	"ALGORITHM" EqOpt identifier
 	{
-		yylex.AppendError(ErrUnknownAlterAlgorithm.GenWithStackByArgs($1))
+		yylex.AppendError(ErrUnknownAlterAlgorithm.GenWithStackByArgs($3))
 		return 1
 	}
 
@@ -1401,6 +1480,13 @@ ColumnPosition:
 			RelativeColumn: $2.(*ast.ColumnName),
 		}
 	}
+
+AlterTableSpecListOpt:
+	/* empty */
+	{
+		$$ = make([]*ast.AlterTableSpec, 0, 1)
+	}
+|	AlterTableSpecList
 
 AlterTableSpecList:
 	AlterTableSpec
@@ -1962,7 +2048,7 @@ ColumnOptionListOpt:
 	}
 
 ConstraintElem:
-	"PRIMARY" "KEY" IndexNameAndTypeOpt '(' IndexColNameList ')' IndexOptionList
+	"PRIMARY" "KEY" IndexNameAndTypeOpt '(' IndexColNameList ')' PartitionIndexOptionList
 	{
 		c := &ast.Constraint{
 			Tp:   ast.ConstraintPrimaryKey,
@@ -1979,7 +2065,7 @@ ConstraintElem:
 		}
 		$$ = c
 	}
-|	"FULLTEXT" KeyOrIndexOpt IndexName '(' IndexColNameList ')' IndexOptionList
+|	"FULLTEXT" KeyOrIndexOpt IndexName '(' IndexColNameList ')' PartitionIndexOptionList
 	{
 		c := &ast.Constraint{
 			Tp:   ast.ConstraintFulltext,
@@ -1991,7 +2077,7 @@ ConstraintElem:
 		}
 		$$ = c
 	}
-|	"SPATIAL" KeyOrIndexOpt IndexName '(' IndexColNameList ')' IndexOptionList
+|	"SPATIAL" KeyOrIndexOpt IndexName '(' IndexColNameList ')' PartitionIndexOptionList
 	{
 		c := &ast.Constraint{
 			Tp:   ast.ConstraintSpatial,
@@ -2003,7 +2089,7 @@ ConstraintElem:
 		}
 		$$ = c
 	}
-|	KeyOrIndex IfNotExists IndexNameAndTypeOpt '(' IndexColNameList ')' IndexOptionList
+|	KeyOrIndex IfNotExists IndexNameAndTypeOpt '(' IndexColNameList ')' PartitionIndexOptionList
 	{
 		c := &ast.Constraint{
 			IfNotExists: $2.(bool),
@@ -2022,7 +2108,7 @@ ConstraintElem:
 		}
 		$$ = c
 	}
-|	"UNIQUE" KeyOrIndexOpt IndexNameAndTypeOpt '(' IndexColNameList ')' IndexOptionList
+|	"UNIQUE" KeyOrIndexOpt IndexNameAndTypeOpt '(' IndexColNameList ')' PartitionIndexOptionList
 	{
 		c := &ast.Constraint{
 			Tp:   ast.ConstraintUniq,
@@ -2202,7 +2288,7 @@ NumLiteral:
  *     LOCK [=] {DEFAULT | NONE | SHARED | EXCLUSIVE}
  *******************************************************************************************/
 CreateIndexStmt:
-	"CREATE" IndexKeyTypeOpt "INDEX" IfNotExists Identifier IndexTypeOpt "ON" TableName '(' IndexColNameList ')' IndexOptionList IndexLockAndAlgorithmOpt
+	"CREATE" IndexKeyTypeOpt "INDEX" IfNotExists Identifier IndexTypeOpt "ON" TableName '(' IndexColNameList ')' PartitionIndexOptionList IndexLockAndAlgorithmOpt PartitionOpt
 	{
 		var indexOption *ast.IndexOption
 		if $12 != nil {
@@ -2225,6 +2311,10 @@ CreateIndexStmt:
 				indexLockAndAlgorithm = nil
 			}
 		}
+		var partitionOpt *ast.PartitionOptions
+		if $14 != nil {
+			partitionOpt = $14.(*ast.PartitionOptions)
+		}
 		$$ = &ast.CreateIndexStmt{
 			IfNotExists:   $4.(bool),
 			IndexName:     $5,
@@ -2234,6 +2324,7 @@ CreateIndexStmt:
 			KeyType:       $2.(ast.IndexKeyType),
 			Unique:        $2.(ast.IndexKeyType) == ast.IndexKeyTypeUnique,
 			LockAlg:       indexLockAndAlgorithm,
+			Partition:     partitionOpt,
 		}
 	}
 
@@ -2756,6 +2847,7 @@ CreateViewSelectOpt:
 	{
 		$$ = $2.(*ast.UnionStmt)
 	}
+
 LikeTableWithOrWithoutParen:
 	"LIKE" TableName
 	{
@@ -3560,6 +3652,12 @@ IndexOptionList:
 				opt1.Comment = opt2.Comment
 			} else if opt2.Tp != 0 {
 				opt1.Tp = opt2.Tp
+			} else if opt2.KeyBlockSize > 0 {
+				opt1.KeyBlockSize = opt2.KeyBlockSize
+			} else if len(opt2.ParserName.O) > 0 {
+				opt1.ParserName = opt2.ParserName
+			} else if opt2.Visibility != ast.IndexVisibilityDefault {
+				opt1.Visibility = opt2.Visibility
 			}
 			$$ = opt1
 		}
@@ -3578,6 +3676,14 @@ IndexOption:
 			Tp: $1.(model.IndexType),
 		}
 	}
+|	"WITH" "PARSER" Identifier
+	{
+		$$ = &ast.IndexOption{
+			ParserName: model.NewCIStr($3),
+		}
+		yylex.AppendError(yylex.Errorf("The WITH PARASER clause is parsed but ignored by all storage engines."))
+		parser.lastErrorAsWarn()
+	}
 |	"COMMENT" stringLit
 	{
 		$$ = &ast.IndexOption{
@@ -3588,6 +3694,40 @@ IndexOption:
 	{
 		$$ = &ast.IndexOption{
 			Visibility: $1.(ast.IndexVisibility),
+		}
+	}
+
+PartitionIndexOpt:
+	{
+		$$ = &ast.IndexOption{
+			PartitionIndexType: model.PartitionIndexTypeInvalid,
+		}
+	}
+|	"LOCAL"
+	{
+		$$ = &ast.IndexOption{
+			PartitionIndexType: model.PartitionIndexTypeLocal,
+		}
+	}
+|	"GLOBAL"
+	{
+		$$ = &ast.IndexOption{
+			PartitionIndexType: model.PartitionIndexTypeGlobal,
+		}
+	}
+
+PartitionIndexOptionList:
+	PartitionIndexOpt IndexOptionList
+	{
+		if $1 == nil {
+			$$ = $2
+		} else if $2 == nil {
+			$$ = $1
+		} else {
+			opt1 := $1.(*ast.IndexOption)
+			opt2 := $2.(*ast.IndexOption)
+			opt2.PartitionIndexType = opt1.PartitionIndexType
+			$$ = opt2
 		}
 	}
 
@@ -3677,6 +3817,7 @@ Identifier:
 UnReservedKeyword:
 	"ACTION"
 |	"ASCII"
+|	"ATTRIBUTES"
 |	"AUTO_INCREMENT"
 |	"AFTER"
 |	"ALWAYS"
@@ -3732,10 +3873,13 @@ UnReservedKeyword:
 |	"LOCAL"
 |	"NAMES"
 |	"OFFSET"
+|	"PARSER"
 |	"PASSWORD" %prec lowerThanEq
 |	"PREPARE"
+|	"PRE_SPLIT_REGIONS"
 |	"QUICK"
 |	"REDUNDANT"
+|	"REORGANIZE"
 |	"ROLLBACK"
 |	"SESSION"
 |	"SIGNED"
@@ -3848,6 +3992,8 @@ UnReservedKeyword:
 |	"HISTORY"
 |	"DIRECTORY"
 |	"NODEGROUP"
+|	"REMOVE"
+|	"PARTITIONING"
 |	"VALIDATION"
 |	"WITHOUT"
 |	"RTREE"
@@ -6968,6 +7114,10 @@ TableOption:
 	{
 		$$ = &ast.TableOption{Tp: ast.TableOptionShardRowID, UintValue: $3.(uint64)}
 	}
+|	"PRE_SPLIT_REGIONS" EqOpt LengthNum
+	{
+		$$ = &ast.TableOption{Tp: ast.TableOptionPreSplitRegion, UintValue: $3.(uint64)}
+	}
 |	"PACK_KEYS" EqOpt StatsPersistentVal
 	{
 		// Parse it but will ignore it.
@@ -6983,12 +7133,6 @@ StatsPersistentVal:
 	{}
 |	LengthNum
 	{}
-
-AlterTableOptionListOpt:
-	{
-		$$ = []*ast.TableOption{}
-	}
-|	TableOptionList %prec higherThanComma
 
 CreateTableOptionListOpt:
 	/* empty */ %prec lowerThanCreateTableSelect

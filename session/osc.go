@@ -56,7 +56,7 @@ type ChanOscData struct {
 
 // Copying `test`.`t1`:  99% 00:00 remain
 // 匹配osc执行进度
-var regOscPercent *regexp.Regexp = regexp.MustCompile(`^Copying .*? (\d+)% (\d+:\d+) remain`)
+var regOscPercent = regexp.MustCompile(`^Copying .*? (\d+)% (\d+:\d+|\d+:\d+:\d+) remain`)
 var regGhostPercent *regexp.Regexp = regexp.MustCompile(`^Copy:.*?(\d+).\d+%;.*?ETA: (.*)?`)
 
 func (s *session) checkAlterUseOsc(t *TableInfo) {
@@ -72,13 +72,14 @@ func (s *session) mysqlComputeSqlSha1(r *Record) {
 		return
 	}
 
-	buf := bytes.NewBufferString(r.DBName)
-
-	buf.WriteString(s.opt.Password)
-	buf.WriteString(s.opt.Host)
-	buf.WriteString(s.opt.User)
-	buf.WriteString(strconv.Itoa(s.opt.Port))
+	var buf strings.Builder
+	if r.DBName != "" {
+		buf.WriteString(r.DBName)
+	} else {
+		buf.WriteString(s.dbName)
+	}
 	buf.WriteString(strconv.Itoa(r.SeqNo))
+	buf.WriteString(s.opt.Host)
 	buf.WriteString(r.Sql)
 
 	r.Sqlsha1 = auth.EncodePassword(buf.String())
@@ -90,13 +91,13 @@ func (s *session) mysqlExecuteAlterTableOsc(r *Record) {
 		s.osc.OscBinDir, string(os.PathListSeparator), os.Getenv("PATH")))
 	if err != nil {
 		log.Error(err)
-		s.appendErrorMessage(err.Error())
+		s.appendErrorMsg(err.Error())
 		return
 	}
 
 	if _, err := exec.LookPath("pt-online-schema-change"); err != nil {
 		log.Error(err)
-		s.appendErrorMessage(err.Error())
+		s.appendErrorMsg(err.Error())
 		return
 	}
 
@@ -232,13 +233,13 @@ func (s *session) mysqlExecuteWithGhost(r *Record) {
 		s.ghost.GhostBinDir, string(os.PathListSeparator), os.Getenv("PATH")))
 	if err != nil {
 		log.Error(err)
-		s.appendErrorMessage(err.Error())
+		s.appendErrorMsg(err.Error())
 		return
 	}
 
 	if _, err := exec.LookPath("gh-ost"); err != nil {
 		log.Error(err)
-		s.appendErrorMessage(err.Error())
+		s.appendErrorMsg(err.Error())
 		return
 	}
 
@@ -307,16 +308,19 @@ func (s *session) mysqlExecuteWithGhost(r *Record) {
 	buf.WriteString(fmt.Sprintf(" --throttle-additional-flag-file=%s", s.ghost.GhostThrottleAdditionalFlagFile))
 	buf.WriteString(fmt.Sprintf(" --postpone-cut-over-flag-file=%s", s.ghost.GhostPostponeCutOverFlagFile))
 	buf.WriteString(fmt.Sprintf(" --initially-drop-socket-file=%t", s.ghost.GhostInitiallyDropSocketFile))
+	buf.WriteString(fmt.Sprintf(" --timestamp-old-table=%t", s.ghost.GhostTimestampOldTable))
 
 	// unix socket file max 104 characters (or 107)
 	socketFile := s.getSocketFile(r)
-	if _, err := os.Stat(socketFile); err == nil {
-		s.appendErrorMessage("listen unix socket file already in use, need to clean up manually")
-		return
-	} else if err != nil && !strings.Contains(err.Error(), "no such file or directory") {
-		log.Errorf("con:%d %v", s.sessionVars.ConnectionID, err)
-		s.appendErrorMessage(err.Error())
-		return
+	if !s.ghost.GhostInitiallyDropSocketFile {
+		if _, err := os.Stat(socketFile); err == nil {
+			s.appendErrorMsg("listen unix socket file already in use, need to clean up manually")
+			return
+		} else if err != nil && !strings.Contains(err.Error(), "no such file or directory") {
+			log.Errorf("con:%d %v", s.sessionVars.ConnectionID, err)
+			s.appendErrorMsg(err.Error())
+			return
+		}
 	}
 
 	buf.WriteString(fmt.Sprintf(" --serve-socket-file=%s", socketFile))
@@ -454,7 +458,7 @@ func (s *session) mysqlExecuteAlterTableGhost(r *Record) {
 	// flag.BoolVar(&migrationContext.InitiallyDropOldTable, "initially-drop-old-table", false, "Drop a possibly existing OLD table (remains from a previous run?) before beginning operation. Default is to panic and abort if such table exists")
 	migrationContext.InitiallyDropGhostTable = s.ghost.GhostInitiallyDropGhostTable
 	// flag.BoolVar(&migrationContext.InitiallyDropGhostTable, "initially-drop-ghost-table", false, "Drop a possibly existing Ghost table (remains from a previous run?) before beginning operation. Default is to panic and abort if such table exists")
-	migrationContext.TimestampOldTable = false
+	migrationContext.TimestampOldTable = s.ghost.GhostTimestampOldTable
 	// flag.BoolVar(&migrationContext.TimestampOldTable, "timestamp-old-table", false, "Use a timestamp in old table name. This makes old table names unique and non conflicting cross migrations")
 	cutOver := s.ghost.GhostCutOver
 	// cutOver := flag.String("cut-over", "atomic", "choose cut-over type (default|atomic, two-step)")
@@ -569,42 +573,42 @@ func (s *session) mysqlExecuteAlterTableGhost(r *Record) {
 	migrationContext.Noop = false
 	if migrationContext.AllowedRunningOnMaster && migrationContext.TestOnReplica {
 		log.Error("--allow-on-master and --test-on-replica are mutually exclusive")
-		s.appendErrorMessage("--allow-on-master and --test-on-replica are mutually exclusive")
+		s.appendErrorMsg("--allow-on-master and --test-on-replica are mutually exclusive")
 	}
 	if migrationContext.AllowedRunningOnMaster && migrationContext.MigrateOnReplica {
 		log.Error("--allow-on-master and --migrate-on-replica are mutually exclusive")
-		s.appendErrorMessage("--allow-on-master and --migrate-on-replica are mutually exclusive")
+		s.appendErrorMsg("--allow-on-master and --migrate-on-replica are mutually exclusive")
 	}
 	if migrationContext.MigrateOnReplica && migrationContext.TestOnReplica {
 		log.Error("--migrate-on-replica and --test-on-replica are mutually exclusive")
-		s.appendErrorMessage("--migrate-on-replica and --test-on-replica are mutually exclusive")
+		s.appendErrorMsg("--migrate-on-replica and --test-on-replica are mutually exclusive")
 	}
 	if migrationContext.SwitchToRowBinlogFormat && migrationContext.AssumeRBR {
 		log.Error("--switch-to-rbr and --assume-rbr are mutually exclusive")
-		s.appendErrorMessage("--switch-to-rbr and --assume-rbr are mutually exclusive")
+		s.appendErrorMsg("--switch-to-rbr and --assume-rbr are mutually exclusive")
 	}
 	if migrationContext.TestOnReplicaSkipReplicaStop {
 		if !migrationContext.TestOnReplica {
 			log.Error("--test-on-replica-skip-replica-stop requires --test-on-replica to be enabled")
-			s.appendErrorMessage("--test-on-replica-skip-replica-stop requires --test-on-replica to be enabled")
+			s.appendErrorMsg("--test-on-replica-skip-replica-stop requires --test-on-replica to be enabled")
 		}
 		log.Warning("--test-on-replica-skip-replica-stop enabled. We will not stop replication before cut-over. Ensure you have a plugin that does this.")
 	}
 	if migrationContext.CliMasterUser != "" && migrationContext.AssumeMasterHostname == "" {
 		log.Error("--master-user requires --assume-master-host")
-		s.appendErrorMessage("--master-user requires --assume-master-host")
+		s.appendErrorMsg("--master-user requires --assume-master-host")
 	}
 	if migrationContext.CliMasterPassword != "" && migrationContext.AssumeMasterHostname == "" {
 		log.Error("--master-password requires --assume-master-host")
-		s.appendErrorMessage("--master-password requires --assume-master-host")
+		s.appendErrorMsg("--master-password requires --assume-master-host")
 	}
 	if migrationContext.TLSCACertificate != "" && !migrationContext.UseTLS {
 		log.Error("--ssl-ca requires --ssl")
-		s.appendErrorMessage("--ssl-ca requires --ssl")
+		s.appendErrorMsg("--ssl-ca requires --ssl")
 	}
 	if migrationContext.TLSAllowInsecure && !migrationContext.UseTLS {
 		log.Error("--ssl-allow-insecure requires --ssl")
-		s.appendErrorMessage("--ssl-allow-insecure requires --ssl")
+		s.appendErrorMsg("--ssl-allow-insecure requires --ssl")
 	}
 	if replicationLagQuery != "" {
 		log.Warningf("--replication-lag-query is deprecated")
@@ -617,33 +621,33 @@ func (s *session) mysqlExecuteAlterTableGhost(r *Record) {
 		migrationContext.CutOverType = base.CutOverTwoStep
 	default:
 		log.Errorf("Unknown cut-over: %s", cutOver)
-		s.appendErrorMessage(fmt.Sprintf("Unknown cut-over: %s", cutOver))
+		s.appendErrorMsg(fmt.Sprintf("Unknown cut-over: %s", cutOver))
 	}
 	if err := migrationContext.ReadConfigFile(); err != nil {
 		log.Error(err)
-		s.appendErrorMessage(err.Error())
+		s.appendErrorMsg(err.Error())
 	}
 	if err := migrationContext.ReadThrottleControlReplicaKeys(throttleControlReplicas); err != nil {
 		log.Error(err)
-		s.appendErrorMessage(err.Error())
+		s.appendErrorMsg(err.Error())
 	}
 	if err := migrationContext.ReadMaxLoad(maxLoad); err != nil {
 		log.Error(err)
-		s.appendErrorMessage(err.Error())
+		s.appendErrorMsg(err.Error())
 	}
 	if err := migrationContext.ReadCriticalLoad(criticalLoad); err != nil {
 		log.Error(err)
-		s.appendErrorMessage(err.Error())
+		s.appendErrorMsg(err.Error())
 	}
 	if migrationContext.ServeSocketFile == "" {
 		// unix socket file max 104 characters (or 107)
 		socketFile := s.getSocketFile(r)
 		if _, err := os.Stat(socketFile); err == nil {
-			s.appendErrorMessage("listen unix socket file already in use, need to clean up manually")
+			s.appendErrorMsg("listen unix socket file already in use, need to clean up manually")
 			return
 		} else if err != nil && !strings.Contains(err.Error(), "no such file or directory") {
 			log.Errorf("con:%d %v", s.sessionVars.ConnectionID, err)
-			s.appendErrorMessage(err.Error())
+			s.appendErrorMsg(err.Error())
 			return
 		}
 		migrationContext.ServeSocketFile = socketFile
@@ -660,15 +664,15 @@ func (s *session) mysqlExecuteAlterTableGhost(r *Record) {
 	migrationContext.ApplyCredentials()
 	if err := migrationContext.SetupTLS(); err != nil {
 		log.Error(err)
-		s.appendErrorMessage(err.Error())
+		s.appendErrorMsg(err.Error())
 	}
 	if err := migrationContext.SetCutOverLockTimeoutSeconds(cutOverLockTimeoutSeconds); err != nil {
 		log.Error(err)
-		s.appendErrorMessage(err.Error())
+		s.appendErrorMsg(err.Error())
 	}
 	if err := migrationContext.SetExponentialBackoffMaxInterval(exponentialBackoffMaxInterval); err != nil {
 		log.Error(err)
-		s.appendErrorMessage(err.Error())
+		s.appendErrorMsg(err.Error())
 	}
 
 	if s.hasError() {
@@ -767,7 +771,7 @@ func (s *session) mysqlExecuteAlterTableGhost(r *Record) {
 
 	if err := migrator.Migrate(); err != nil {
 		log.Error(err)
-		s.appendErrorMessage(err.Error())
+		s.appendErrorMsg(err.Error())
 	}
 
 	s.sessionManager.OscLock()
@@ -797,13 +801,13 @@ func (s *session) execCommand(r *Record, socketFile string, commandName string, 
 	//StdoutPipe方法返回一个在命令Start后与命令标准输出关联的管道。Wait方法获知命令结束后会关闭这个管道，一般不需要显式的关闭该管道。
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		s.appendErrorMessage(err.Error())
+		s.appendErrorMsg(err.Error())
 		log.Error(err)
 		return err
 	}
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
-		s.appendErrorMessage(err.Error())
+		s.appendErrorMsg(err.Error())
 		log.Error(err)
 		return err
 	}
@@ -814,7 +818,7 @@ func (s *session) execCommand(r *Record, socketFile string, commandName string, 
 
 	// 运行命令
 	if err := cmd.Start(); err != nil {
-		s.appendErrorMessage(err.Error())
+		s.appendErrorMsg(err.Error())
 		log.Error(err)
 		return err
 	}
@@ -880,9 +884,9 @@ func (s *session) execCommand(r *Record, socketFile string, commandName string, 
 			p.Killed = true
 			p.RW.Unlock()
 			if err := cmd.Process.Kill(); err != nil {
-				s.appendErrorMessage(err.Error())
+				s.appendErrorMsg(err.Error())
 			} else {
-				s.appendErrorMessage(
+				s.appendErrorMsg(
 					fmt.Sprintf("Execute has been abort in percent: %d, remain time: %s",
 						p.Percent, p.RemainTime))
 			}
@@ -896,7 +900,7 @@ func (s *session) execCommand(r *Record, socketFile string, commandName string, 
 	//阻塞直到该命令执行完成，该命令必须是被Start方法开始执行的
 	err = cmd.Wait()
 	if err != nil {
-		s.appendErrorMessage(err.Error())
+		s.appendErrorMsg(err.Error())
 		log.Errorf("%s %s", commandName, params)
 		log.Error(err)
 	}
@@ -1095,14 +1099,14 @@ func (s *session) getAlterPartSql(sql string) (string, bool) {
 	charsetInfo, collation := s.sessionVars.GetCharsetInfo()
 	stmtNodes, _, err := s.parser.Parse(sql, charsetInfo, collation)
 	if err != nil {
-		s.appendErrorMessage(err.Error())
+		s.appendErrorMsg(err.Error())
 		return "", false
 	}
 	var builder strings.Builder
 	var columns []string
 
 	if len(stmtNodes) == 0 {
-		s.appendErrorMessage(fmt.Sprintf("未正确解析ALTER语句: %s", sql))
+		s.appendErrorMsg(fmt.Sprintf("未正确解析ALTER语句: %s", sql))
 		log.Error(fmt.Sprintf("未正确解析ALTER语句: %s", sql))
 		return "", false
 	}
@@ -1115,14 +1119,14 @@ func (s *session) getAlterPartSql(sql string) (string, bool) {
 				builder.Reset()
 				err = alter.Restore(format.NewRestoreCtx(format.DefaultRestoreFlags, &builder))
 				if err != nil {
-					s.appendErrorMessage(err.Error())
+					s.appendErrorMsg(err.Error())
 					return "", false
 				}
-				restoreSQL := builder.String()
+				restoreSQL := strings.TrimSpace(builder.String())
 				columns = append(columns, restoreSQL)
 			}
 		default:
-			s.appendErrorMessage(fmt.Sprintf("无效类型: %v", stmtNode))
+			s.appendErrorMsg(fmt.Sprintf("无效类型: %v", stmtNode))
 			return "", false
 		}
 	}
@@ -1131,7 +1135,7 @@ func (s *session) getAlterPartSql(sql string) (string, bool) {
 		return strings.Join(columns, ", "), true
 	}
 
-	s.appendErrorMessage(fmt.Sprintf("未正确解析SQL: %s", sql))
+	s.appendErrorMsg(fmt.Sprintf("未正确解析SQL: %s", sql))
 	return "", false
 }
 

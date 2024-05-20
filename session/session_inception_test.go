@@ -615,12 +615,6 @@ func (s *testSessionIncSuite) TestCreateTable(c *C) {
 		session.NewErr(session.ER_TABLE_CHARSET_MUST_NULL, "t1"))
 
 	config.GetGlobalConfig().Inc.EnableSetCharset = true
-	config.GetGlobalConfig().Inc.SupportCharset = "utf8mb4"
-	sql = "create table t1(a int) character set utf8;"
-	s.testErrorCode(c, sql,
-		session.NewErr(session.ErrCharsetNotSupport, "utf8mb4"))
-
-	config.GetGlobalConfig().Inc.EnableSetCharset = true
 	config.GetGlobalConfig().Inc.SupportCharset = "utf8,utf8mb4"
 	sql = "create table t1(a int) character set utf8;"
 	s.testErrorCode(c, sql)
@@ -647,12 +641,20 @@ func (s *testSessionIncSuite) TestCreateTable(c *C) {
 	s.testErrorCode(c, sql,
 		session.NewErr(session.ErrCharsetNotSupport, "utf8,utf8mb4"))
 
-	config.GetGlobalConfig().Inc.SupportCharset = "utf8,utf8mb4,gbk"
+	config.GetGlobalConfig().Inc.SupportCharset = "utf8,utf8mb3,utf8mb4,gbk"
 
 	sql = "create table t1(a int) character set gbk collate gbk_bin;"
 	s.testErrorCode(c, sql)
 	sql = "create table t1(a int) character set gbk;"
 	s.testErrorCode(c, sql)
+
+	sql = "create table t1(a int) character set utf8mb3;"
+	if s.DBVersion > 50700 {
+		s.testErrorCode(c, sql)
+	} else {
+		s.testErrorCode(c, sql,
+			session.NewErr(session.ErrUnknownCharset, "utf8mb3"))
+	}
 
 	// 外键
 	sql = "create table test_error_code (a int not null ,b int not null,c int not null, d int not null, foreign key (b, c) references product(id));"
@@ -2332,6 +2334,26 @@ WHERE tt1.id=1;`
 		create table table1(id1 int primary key,c1 int,c2 int);
 		update table1 t1 join (select 1 as id2 union all select 2) t2 set c1=2 where t1.id1=t2.id2;`
 	s.testErrorCode(c, sql)
+
+	s.realRowCount = true
+	// 受影响行数: explain计算规则
+	s.mustRunExec(c, `drop table if exists t1,t2;
+			create table t1(id int primary key,c1 int,c2 varchar(100));
+			insert into t1(id,c1,c2)values(1,1,'_aaa'),(2,2,'aaa');`)
+	// 检查转义符
+	sql = `update t1 set c1 = c1 +10 where c2 like '%\_a%';`
+	s.mustCheck(c, sql)
+	s.testAffectedRows(c, 1)
+
+	s.realRowCount = false
+	// 受影响行数: explain计算规则
+	s.mustRunExec(c, `drop table if exists t1,t2;
+			create table t1(id int primary key,c1 int,c2 varchar(100));
+			insert into t1(id,c1,c2)values(1,1,'_aaa'),(2,2,'aaa');`)
+	// 检查转义符
+	sql = `update t1 set c1 = c1 +10 where c2 like '%\_a%';`
+	s.mustCheck(c, sql)
+	s.testAffectedRows(c, 2)
 }
 
 func (s *testSessionIncSuite) TestDelete(c *C) {

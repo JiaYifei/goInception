@@ -614,10 +614,20 @@ func (s *session) processCommand(ctx context.Context, stmtNode ast.StmtNode,
 	case *ast.TruncateTableStmt:
 		s.checkTruncateTable(node, currentSql)
 
+	case *ast.CreateTableGroupStmt:
+		s.checkCreateTableGroup(node, currentSql)
+	case *ast.AlterTableGroupStmt:
+		s.checkAlterTableGroup(node, currentSql)
+	case *ast.DropTableGroupStmt:
+		s.checkDropTableGroup(node, currentSql)
+
 	case *ast.CreateIndexStmt:
 		tp := ast.ConstraintIndex
 		if node.Unique {
 			tp = ast.ConstraintUniq
+		}
+		if node.KeyType == ast.IndexKeyTypeFullText {
+			tp = ast.ConstraintFulltext
 		}
 		s.checkCreateIndex(node.Table, node.IndexName,
 			node.IndexColNames, node.IndexOption, nil, node.Unique, tp)
@@ -1770,7 +1780,11 @@ func (s *session) mysqlServerVersion() {
 			case "gtid_mode":
 				s.gtidMode = value
 			case "character_set_database":
-				s.databaseCharset = value
+				if value == "utf8mb3" {
+					s.databaseCharset = "utf8"
+				} else {
+					s.databaseCharset = value
+				}
 			}
 		}
 
@@ -1790,7 +1804,7 @@ func (s *session) mysqlServerVersion() {
 		if s.databaseCharset == "" {
 			s.databaseCharset = s.inc.DefaultCharset
 		}
-		// log.Errorf("s.innodbLargePrefix: %v ", s.innodbLargePrefix)
+		log.Infof("s.innodbLargePrefix: %v ", s.innodbLargePrefix)
 	}
 
 }
@@ -2079,8 +2093,10 @@ func (s *session) parseOptions(sql string) {
 
 	viper := viper.New()
 	viper.SetConfigType("yaml")
-	viper.ReadConfig(bytes.NewBuffer([]byte(opt)))
-
+	err := viper.ReadConfig(bytes.NewBuffer([]byte(opt)))
+	if err != nil {
+		log.Errorf("con:%d, config: %s, parsed: %#v (err: %v)", s.sessionVars.ConnectionID, opt, viper.AllSettings(), err)
+	}
 	// 设置默认值
 	// viper.SetDefault("db", "mysql")
 
@@ -2134,7 +2150,7 @@ func (s *session) parseOptions(sql string) {
 	}
 
 	if err := s.checkOptions(); err != nil {
-		log.Errorf("con:%d %v", s.sessionVars.ConnectionID, err)
+		log.Errorf("con:%d, config: %s, parsed: %#v (err: %v)", s.sessionVars.ConnectionID, opt, viper.AllSettings(), err)
 		s.appendErrorMsg(err.Error())
 	}
 }
@@ -2306,6 +2322,118 @@ func (s *session) checkDropTable(node *ast.DropTableStmt, sql string) {
 					"Drop", s.myRecord.AffectedRows, s.inc.MaxDDLAffectRows)
 			}
 		}
+	}
+}
+
+func (s *session) supportTableGroup() bool {
+	return s.dbType == DBTypeOceanBase
+}
+
+type TableGroupColumn struct {
+	TableGroupName string `gorm:"Column:Tablegroup_name"`
+	DataBaseName   string `gorm:"Column:Database_name"`
+	TableName      string `gorm:"Column:Table_name"`
+}
+
+func (s *session) checkTableGroupExists(name string, reportNotExists bool) bool {
+	var tableGroups []TableGroupColumn
+	if err := s.rawScan("SHOW TABLEGROUPS", &tableGroups); err != nil {
+		s.appendErrorMsg(err.Error())
+		return false
+	}
+
+	found := false
+	for _, tableGroup := range tableGroups {
+		if name == tableGroup.TableGroupName {
+			found = true
+			break
+		}
+	}
+	if !found && reportNotExists {
+		s.appendErrorNo(ER_TABLE_GROUP_NOT_EXISTED_ERROR, name)
+	}
+	return found
+}
+
+func (s *session) checkCreateTableGroup(node *ast.CreateTableGroupStmt, sql string) {
+	log.Debug("checkCreateTableGroup")
+
+	if !s.supportTableGroup() {
+		s.appendErrorNo(ER_NOT_SUPPORTED_YET)
+		return
+	}
+
+	s.checkKeyWords(node.TableGroup.Name.O)
+	if s.myRecord.ErrLevel == 2 {
+		return
+	}
+
+	if s.checkTableGroupExists(node.TableGroup.Name.O, false) {
+		if !node.IfNotExists {
+			s.appendErrorNo(ER_TABLE_GROUP_EXISTS_ERROR, node.TableGroup.Name.O)
+			return
+		}
+	}
+
+	if node.Partition != nil {
+		if !s.inc.EnablePartitionTable {
+			s.appendErrorNo(ER_PARTITION_NOT_ALLOWED)
+		}
+	}
+
+	if !s.hasError() && s.opt.Execute {
+		s.myRecord.DDLRollback = fmt.Sprintf("DROP TABLEGROUP %s`;", node.TableGroup.Name.O)
+	}
+}
+
+func (s *session) checkAlterTableGroup(node *ast.AlterTableGroupStmt, sql string) {
+	log.Debug("checkAlterTableGroup")
+
+	if !s.supportTableGroup() {
+		s.appendErrorNo(ER_NOT_SUPPORTED_YET)
+		return
+	}
+
+	s.checkKeyWords(node.TableGroup.Name.O)
+	if s.myRecord.ErrLevel == 2 {
+		return
+	}
+
+	if !s.checkTableGroupExists(node.TableGroup.Name.O, true) {
+		return
+	}
+
+	for _, tableName := range node.Spec.Tables {
+		if tableName.Schema.O == "" {
+			tableName.Schema = model.NewCIStr(s.dbName)
+		}
+
+		if !s.checkDBExists(tableName.Schema.O, true) {
+			return
+		}
+
+		s.getTableFromCache(tableName.Schema.O, tableName.Name.O, true)
+	}
+
+	if !s.inc.EnablePartitionTable && (node.Spec.Partition != nil || len(node.Spec.PartitionNames) != 0) {
+		s.appendErrorNo(ER_PARTITION_NOT_ALLOWED)
+	}
+}
+
+func (s *session) checkDropTableGroup(node *ast.DropTableGroupStmt, sql string) {
+	log.Debug("checkAlterTableGroup")
+
+	if !s.supportTableGroup() {
+		s.appendErrorNo(ER_NOT_SUPPORTED_YET)
+		return
+	}
+
+	s.checkKeyWords(node.TableGroup.Name.O)
+	if s.myRecord.ErrLevel == 2 {
+		return
+	}
+	if !s.checkTableGroupExists(node.TableGroup.Name.O, false) && !node.IfExists {
+		s.appendErrorNo(ER_TABLE_GROUP_NOT_EXISTED_ERROR, node.TableGroup.Name.O)
 	}
 }
 
@@ -2959,6 +3087,14 @@ func (s *session) checkTableOptions(options []*ast.TableOption, table string, is
 			if opt.UintValue > 1 && isCreate {
 				s.appendErrorNo(ER_INC_INIT_ERR)
 			}
+		case ast.TableOptionTableGroup:
+			if s.supportTableGroup() {
+				if opt.StrValue != "" {
+					s.checkTableGroupExists(opt.StrValue, true)
+				}
+			} else {
+				s.appendErrorNo(ER_NOT_SUPPORTED_YET)
+			}
 		default:
 			s.appendErrorNo(ER_NOT_SUPPORTED_ALTER_OPTION)
 		}
@@ -3384,7 +3520,9 @@ func (s *session) checkAlterTable(node *ast.AlterTableStmt, sql string) {
 			ast.AlterTableOptimizePartition,
 			ast.AlterTableRepairPartition,
 			ast.AlterTableImportPartitionTablespace,
-			ast.AlterTableDiscardPartitionTablespace:
+			ast.AlterTableDiscardPartitionTablespace,
+			ast.AlterTablePartitionAttributes,
+			ast.AlterTablePartitionOptions:
 			s.appendErrorNo(ER_PARTITION_NOT_ALLOWED)
 			_ = s.fetchPartitionFromDB(table)
 
@@ -3395,7 +3533,11 @@ func (s *session) checkAlterTable(node *ast.AlterTableStmt, sql string) {
 
 		case ast.AlterTableIndexInvisible:
 			_ = s.checkIndexExists(table, alter)
-
+		case ast.AlterTableDropTableGroup:
+			if !s.supportTableGroup() {
+				s.appendErrorNo(ER_NOT_SUPPORTED_YET)
+				return
+			}
 		default:
 			s.appendErrorNo(ER_NOT_SUPPORTED_YET)
 			log.Info("con:", s.sessionVars.ConnectionID, " 未定义的解析: ", alter.Tp)
@@ -3409,6 +3551,8 @@ func (s *session) checkAlterTable(node *ast.AlterTableStmt, sql string) {
 			}
 		}
 	}
+
+	s.checkMultiPartitionParts(node.Specs)
 
 	if !s.hasError() && s.inc.ColumnsMustHaveIndex != "" {
 		tableCopy := s.getTableFromCache(node.Table.Schema.O, node.Table.Name.O, true)
@@ -3463,6 +3607,39 @@ func (s *session) checkAlterTable(node *ast.AlterTableStmt, sql string) {
 			s.appendErrorMsg(err.Error())
 			return
 		}
+	}
+}
+
+func (s *session) checkMultiPartitionParts(specs []*ast.AlterTableSpec) {
+	if len(specs) <= 1 {
+		return
+	}
+	count := 0
+	for _, alter := range specs {
+		switch alter.Tp {
+		/* 分区表 */
+		case ast.AlterTableAddPartitions,
+			ast.AlterTableDropPartition,
+			ast.AlterTableRemovePartitioning,
+			ast.AlterTablePartition,
+			ast.AlterTableAlterPartition,
+			ast.AlterTableCoalescePartitions,
+			ast.AlterTableTruncatePartition,
+			ast.AlterTableRebuildPartition,
+			ast.AlterTableReorganizePartition,
+			ast.AlterTableCheckPartitions,
+			ast.AlterTableExchangePartition,
+			ast.AlterTableOptimizePartition,
+			ast.AlterTableRepairPartition,
+			ast.AlterTableImportPartitionTablespace,
+			ast.AlterTableDiscardPartitionTablespace,
+			ast.AlterTablePartitionAttributes,
+			ast.AlterTablePartitionOptions:
+			count++
+		}
+	}
+	if count > 1 {
+		s.appendErrorMsg("Syntax error, PARTITION does not support multiple clauses.")
 	}
 }
 
@@ -4456,7 +4633,7 @@ func (s *session) checkIndexAttr(tp ast.ConstraintType, name string,
 		if s.inc.IndexPrefix != "" {
 			var found bool
 			for _, v := range strings.Split(s.inc.IndexPrefix, ",") {
-				if strings.HasPrefix(name, v) {
+				if strings.HasPrefix(strings.ToLower(name), v) {
 					found = true
 					break
 				}
@@ -4725,14 +4902,18 @@ func (s *session) checkAddColumn(t *TableInfo, c *ast.AlterTableSpec) {
 			if !s.hasError() {
 				isPrimary := false
 				isUnique := false
+				var isStore *bool
 				for _, op := range nc.Options {
 					switch op.Tp {
 					case ast.ColumnOptionPrimaryKey:
 						isPrimary = true
 					case ast.ColumnOptionUniqKey:
 						isUnique = true
+					case ast.ColumnOptionGenerated:
+						isStore = &op.Stored
 					}
 				}
+
 				if isPrimary || isUnique {
 					if s.dbType == DBTypeOceanBase {
 						s.appendErrorNo(ER_CANT_ADD_PK_OR_UK_COLUMN, nc.Name.Name.String())
@@ -4778,6 +4959,16 @@ func (s *session) checkAddColumn(t *TableInfo, c *ast.AlterTableSpec) {
 							NonUnique:  0,
 						}
 						t.Indexes = append(t.Indexes, index)
+					}
+				} else {
+					// 此时已经排除主键/唯一键的情况
+					// 8.0版本下只有STORED column不支持Only Modifies Metadata
+					if s.dbVersion >= 80000 && (nil == isStore || !*isStore) {
+						s.myRecord.useOsc = false
+					}
+					// 如果mysql版本小于8.0,只有VIRTUAL column支持Only Modifies Metadata
+					if s.dbVersion < 80000 && nil != isStore && !*isStore {
+						s.myRecord.useOsc = false
 					}
 				}
 			}
@@ -4932,6 +5123,8 @@ func (s *session) checkDropIndex(node *ast.DropIndexStmt, sql string) {
 		return
 	}
 
+	s.mysqlShowTableStatus(t)
+
 	s.checkAlterTableDropIndex(t, node.IndexName)
 
 }
@@ -5077,8 +5270,8 @@ func (s *session) checkCreateIndex(table *ast.TableName, IndexName string,
 	if !isBlobColumn && !isOverflowIndexLength {
 		// --删除!-- mysql 5.6版本索引长度限制是767,5.7及之后变为3072
 		// 未开启innodbLargePrefix时,单列长度不能超过767
-		// 所有情况下,总长度不能超过3072
-		if keyMaxLen > maxKeyLength57 {
+		// 大部分情况下,总长度不能超过3072，但全文索引允许
+		if keyMaxLen > maxKeyLength57 && tp != ast.ConstraintFulltext {
 			s.appendErrorNo(ER_TOO_LONG_KEY, IndexName, maxKeyLength57)
 		}
 
@@ -6712,8 +6905,12 @@ func (s *session) checkAlterDB(node *ast.AlterDatabaseStmt, sql string) {
 }
 
 func (s *session) checkCharset(charset string) bool {
+	if s.dbVersion < 50700 && strings.EqualFold(charset, "utf8mb3") {
+		s.appendErrorNo(ErrUnknownCharset, charset)
+	}
 	if s.inc.SupportCharset != "" {
 		for _, item := range strings.Split(s.inc.SupportCharset, ",") {
+			item = strings.TrimSpace(item)
 			if strings.EqualFold(item, charset) {
 				return true
 			}
@@ -6727,6 +6924,8 @@ func (s *session) checkCharset(charset string) bool {
 func (s *session) checkCollation(collation string) bool {
 	if s.inc.SupportCollation != "" {
 		for _, item := range strings.Split(s.inc.SupportCollation, ",") {
+			// Support collation of utf8mb3 aliases
+			item = strings.TrimSpace(strings.ReplaceAll(item, "utf8mb3", "utf8"))
 			if strings.EqualFold(item, collation) {
 				return true
 			}
@@ -6740,6 +6939,7 @@ func (s *session) checkCollation(collation string) bool {
 func (s *session) checkEngine(engine string) bool {
 	if s.inc.SupportEngine != "" {
 		for _, item := range strings.Split(s.inc.SupportEngine, ",") {
+			item = strings.TrimSpace(item)
 			if strings.EqualFold(item, engine) {
 				return true
 			}
@@ -7574,6 +7774,15 @@ func (s *session) checkDelete(node *ast.DeleteStmt, sql string) {
 					(strings.EqualFold(tName, name.Name.L)) {
 					if s.myRecord.TableInfo == nil {
 						s.myRecord.TableInfo = tableInfoList[i]
+					} else {
+						key := fmt.Sprintf("%s.%s", t.Schema, t.Name)
+						key = strings.ToLower(key)
+						if s.myRecord.MultiTables == nil {
+							s.myRecord.MultiTables = make(map[string]*TableInfo, 0)
+							s.myRecord.MultiTables[key] = tableInfoList[i]
+						} else if _, ok := s.myRecord.MultiTables[key]; !ok {
+							s.myRecord.MultiTables[key] = tableInfoList[i]
+						}
 					}
 					found = true
 					break

@@ -130,6 +130,8 @@ const (
 	ER_END_WITH_COMMIT
 	ER_DB_NOT_EXISTED_ERROR
 	ER_TABLE_EXISTS_ERROR
+	ER_TABLE_GROUP_EXISTS_ERROR
+	ER_TABLE_GROUP_NOT_EXISTED_ERROR
 	ER_INDEX_NAME_IDX_PREFIX
 	ER_INDEX_NAME_UNIQ_PREFIX
 	ER_AUTOINC_UNSIGNED
@@ -320,6 +322,8 @@ var ErrorsDefault = map[ErrorCode]string{
 	ER_END_WITH_COMMIT:                     "Must end with commit.",
 	ER_DB_NOT_EXISTED_ERROR:                "Selected Database '%s' not existed.",
 	ER_TABLE_EXISTS_ERROR:                  "Table '%s' already exists.",
+	ER_TABLE_GROUP_EXISTS_ERROR:            "Table group '%s' already exists.",
+	ER_TABLE_GROUP_NOT_EXISTED_ERROR:       "Table group '%s' not existed.",
 	ER_INDEX_NAME_IDX_PREFIX:               "Index '%s' need '%s' prefix (table '%s').",
 	ER_INDEX_NAME_UNIQ_PREFIX:              "Unique index '%s' need '%s' prefix (table '%s').",
 	ER_AUTOINC_UNSIGNED:                    "Set unsigned attribute on auto increment column in table '%s'.",
@@ -342,7 +346,7 @@ var ErrorsDefault = map[ErrorCode]string{
 	ER_INDEX_USE_ALTER_TABLE:               "Create/drop index and rename is not allowed, please replace with alter statement.",
 	ER_WITH_DEFAULT_ADD_COLUMN:             "Set Default value for column '%s' in table '%s'",
 	ER_TRUNCATED_WRONG_VALUE:               "Truncated incorrect %s value: '%s'",
-	ER_TEXT_NOT_NULLABLE_ERROR:             "TEXT/BLOB Column '%s' in table '%s' can't  been not null.",
+	ER_TEXT_NOT_NULLABLE_ERROR:             "TEXT/BLOB/JSON Column '%s' in table '%s' can't been not null.",
 	ER_WRONG_VALUE_FOR_VAR:                 "Variable '%s' can't be set to the value of '%s'",
 	ER_TOO_MUCH_AUTO_TIMESTAMP_COLS:        "Incorrect table definition; there can be only one TIMESTAMP column with CURRENT_TIMESTAMP in DEFAULT or ON UPDATE clause",
 	ER_INVALID_ON_UPDATE:                   "Invalid ON UPDATE clause for '%s' column",
@@ -510,6 +514,8 @@ var ErrorsChinese = map[ErrorCode]string{
 	ER_END_WITH_COMMIT:                     "Must end with commit.",
 	ER_DB_NOT_EXISTED_ERROR:                "选择的数据库 '%s' 不存在.",
 	ER_TABLE_EXISTS_ERROR:                  "表 '%s' 已存在.",
+	ER_TABLE_GROUP_EXISTS_ERROR:            "表组 '%s' 已存在.",
+	ER_TABLE_GROUP_NOT_EXISTED_ERROR:       "表组 '%s' 不存在.",
 	ER_INDEX_NAME_IDX_PREFIX:               "索引 '%s' 需要指定'%s'前缀(表'%s').",
 	ER_INDEX_NAME_UNIQ_PREFIX:              "唯一索引 '%s' 需要指定'%s'前缀(表'%s').",
 	ER_AUTOINC_UNSIGNED:                    "自增列建议设置无符号标志unsigned(表'%s').",
@@ -532,7 +538,7 @@ var ErrorsChinese = map[ErrorCode]string{
 	ER_INDEX_USE_ALTER_TABLE:               "暂不支持create/drop index和rename语法,请使用alter语句替换.",
 	ER_WITH_DEFAULT_ADD_COLUMN:             "列 '%s' 请设置默认值(表'%s')",
 	ER_TRUNCATED_WRONG_VALUE:               "Truncated incorrect %s value: '%s'",
-	ER_TEXT_NOT_NULLABLE_ERROR:             "TEXT/BLOB 列 '%s' 禁止设置为not null(表'%s').",
+	ER_TEXT_NOT_NULLABLE_ERROR:             "TEXT/BLOB/JSON 列 '%s' 禁止设置为not null(表'%s').",
 	ER_WRONG_VALUE_FOR_VAR:                 "Variable '%s' can't be set to the value of '%s'",
 	ER_TOO_MUCH_AUTO_TIMESTAMP_COLS:        "表定义不正确,只能有一个TIMESTAMP字段在DEFAULT或ON UPDATE指定CURRENT_TIMESTAMP.",
 	ER_INVALID_ON_UPDATE:                   "列 %s' ON UPDATE 设置无效",
@@ -957,6 +963,10 @@ func (e ErrorCode) String() string {
 		return "er_db_not_existed_error"
 	case ER_TABLE_EXISTS_ERROR:
 		return "er_table_exists_error"
+	case ER_TABLE_GROUP_EXISTS_ERROR:
+		return "er_table_group_exists_error"
+	case ER_TABLE_GROUP_NOT_EXISTED_ERROR:
+		return "er_table_group_not_existed_error"
 	case ER_INDEX_NAME_IDX_PREFIX:
 		return "er_index_name_idx_prefix"
 	case ER_INDEX_NAME_UNIQ_PREFIX:
